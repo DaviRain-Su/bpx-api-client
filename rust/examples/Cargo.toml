@@ -16,6 +16,7 @@ tokio-tungstenite = { workspace = true }
 tracing = { workspace = true }
 chrono = "0.4"
 rust_decimal = "1.32"
+rust_decimal_macros = "1.32"
 
 [[bin]]
 name = "orders"
