@@ -56,22 +56,24 @@ async fn main() {
     let base_url = env::var("BASE_URL").unwrap_or_else(|_| BACKPACK_API_BASE_URL.to_string());
     let secret = env::var("SECRET").expect("Missing SECRET environment variable");
 
-    println!("=== 移动平均线交叉策略交易机器人启动 ===");
+    println!("=== 移动平均线交叉策略期货交易机器人启动 ===");
     println!("时间: {}", Local::now().format("%Y-%m-%d %H:%M:%S"));
-    println!("交易对: SOL_USDC");
+    println!("交易对: FARTCOIN-PERP");
     println!("初始资金: 100 USDC");
 
     let client = BpxClient::init(base_url, &secret, None)
         .expect("Failed to initialize Backpack API client");
 
     // 交易参数设置
-    let symbol = "SOL_USDC";
+    let symbol = "FARTCOIN_USD";  // 期货合约交易对
     let interval = KlineInterval::OneHour;  // 1小时K线
     let trade_amount = dec!(100); // 每次交易金额（USDC）
     let mut current_order_id: Option<String> = None;
     let mut last_price: Option<f64> = None;
     let mut total_trades = 0;
     let mut successful_trades = 0;
+    let mut position_size = Decimal::ZERO;  // 当前持仓大小
+    let mut position_side = None;  // 当前持仓方向
 
     loop {
         let current_time = Local::now();
@@ -83,6 +85,7 @@ async fn main() {
             .unwrap()
             .timestamp();
 
+        // 获取K线数据
         match client.get_k_lines(symbol, interval, Some(start_time), None).await {
             Ok(klines) => {
                 // 提取收盘价
@@ -128,10 +131,19 @@ async fn main() {
                             fast, slow, ((fast - slow) / slow) * 100.0);
                     }
 
+                    // 打印当前持仓信息
+                    if position_size != Decimal::ZERO {
+                        println!("当前持仓: {} {} (方向: {})", 
+                            position_size.to_string(),
+                            symbol,
+                            if position_side == Some(Side::Bid) { "做多" } else { "做空" }
+                        );
+                    }
+
                     println!("当前价格: {:.2}, 信号: {}", current_price, 
                         match latest_signal {
-                            1 => "买入",
-                            -1 => "卖出",
+                            1 => "做多",
+                            -1 => "做空",
                             _ => "持有"
                         });
 
@@ -148,72 +160,100 @@ async fn main() {
 
                     // 根据信号执行交易
                     match latest_signal {
-                        1 => { // 买入信号
-                            total_trades += 1;
-                            let quantity = trade_amount / Decimal::from_f64(*current_price).unwrap();
-                            println!("准备买入: 数量={:.4} SOL, 价格={:.2} USDC", 
-                                quantity.to_f64().unwrap(), current_price);
-                            
-                            let order_payload = ExecuteOrderPayload {
-                                symbol: symbol.to_string(),
-                                side: Side::Bid,
-                                order_type: OrderType::Market,
-                                quantity: Some(quantity),
-                                ..Default::default()
-                            };
-                            
-                            match client.execute_order(order_payload).await {
-                                Ok(order) => {
-                                    println!("买入订单已提交: {:?}", order);
-                                    successful_trades += 1;
-                                    match order {
-                                        Order::Market(market_order) => {
-                                            let order_id = market_order.id.clone();
-                                            current_order_id = Some(order_id);
-                                            println!("订单ID: {}", market_order.id);
-                                        },
-                                        Order::Limit(limit_order) => {
-                                            let order_id = limit_order.id.clone();
-                                            current_order_id = Some(order_id);
-                                            println!("订单ID: {}", limit_order.id);
+                        1 => { // 做多信号
+                            if position_side != Some(Side::Bid) {
+                                total_trades += 1;
+                                let quantity = trade_amount / Decimal::from_f64(*current_price).unwrap();
+                                println!("准备做多: 数量={:.4} {}, 价格={:.2} USDC", 
+                                    quantity.to_f64().unwrap(), symbol, current_price);
+                                
+                                let order_payload = ExecuteOrderPayload {
+                                    symbol: symbol.to_string(),
+                                    side: Side::Bid,
+                                    order_type: OrderType::Market,
+                                    quantity: Some(quantity),
+                                    ..Default::default()
+                                };
+                                
+                                match client.execute_order(order_payload).await {
+                                    Ok(order) => {
+                                        println!("做多订单已提交: {:?}", order);
+                                        successful_trades += 1;
+                                        match order {
+                                            Order::Market(market_order) => {
+                                                let order_id = market_order.id.clone();
+                                                current_order_id = Some(order_id);
+                                                position_size = quantity;
+                                                position_side = Some(Side::Bid);
+                                                println!("订单ID: {}", market_order.id);
+                                            },
+                                            Order::Limit(limit_order) => {
+                                                let order_id = limit_order.id.clone();
+                                                current_order_id = Some(order_id);
+                                                position_size = quantity;
+                                                position_side = Some(Side::Bid);
+                                                println!("订单ID: {}", limit_order.id);
+                                            }
                                         }
-                                    }
-                                },
-                                Err(e) => eprintln!("买入订单失败: {:?}", e),
+                                    },
+                                    Err(e) => {
+                                        eprintln!("做多订单失败: {:?}", e);
+                                        if e.to_string().to_lowercase().contains("invalid symbol") {
+                                            eprintln!("错误: 交易对 {} 可能不存在或格式不正确", symbol);
+                                            break;
+                                        }
+                                    },
+                                }
+                            } else {
+                                println!("已经持有多头仓位，无需操作");
                             }
                         },
-                        -1 => { // 卖出信号
-                            total_trades += 1;
-                            let quantity = trade_amount / Decimal::from_f64(*current_price).unwrap();
-                            println!("准备卖出: 数量={:.4} SOL, 价格={:.2} USDC", 
-                                quantity.to_f64().unwrap(), current_price);
-                            
-                            let order_payload = ExecuteOrderPayload {
-                                symbol: symbol.to_string(),
-                                side: Side::Ask,
-                                order_type: OrderType::Market,
-                                quantity: Some(quantity),
-                                ..Default::default()
-                            };
-                            
-                            match client.execute_order(order_payload).await {
-                                Ok(order) => {
-                                    println!("卖出订单已提交: {:?}", order);
-                                    successful_trades += 1;
-                                    match order {
-                                        Order::Market(market_order) => {
-                                            let order_id = market_order.id.clone();
-                                            current_order_id = Some(order_id);
-                                            println!("订单ID: {}", market_order.id);
-                                        },
-                                        Order::Limit(limit_order) => {
-                                            let order_id = limit_order.id.clone();
-                                            current_order_id = Some(order_id);
-                                            println!("订单ID: {}", limit_order.id);
+                        -1 => { // 做空信号
+                            if position_side != Some(Side::Ask) {
+                                total_trades += 1;
+                                let quantity = trade_amount / Decimal::from_f64(*current_price).unwrap();
+                                println!("准备做空: 数量={:.4} {}, 价格={:.2} USDC", 
+                                    quantity.to_f64().unwrap(), symbol, current_price);
+                                
+                                let order_payload = ExecuteOrderPayload {
+                                    symbol: symbol.to_string(),
+                                    side: Side::Ask,
+                                    order_type: OrderType::Market,
+                                    quantity: Some(quantity),
+                                    ..Default::default()
+                                };
+                                
+                                match client.execute_order(order_payload).await {
+                                    Ok(order) => {
+                                        println!("做空订单已提交: {:?}", order);
+                                        successful_trades += 1;
+                                        match order {
+                                            Order::Market(market_order) => {
+                                                let order_id = market_order.id.clone();
+                                                current_order_id = Some(order_id);
+                                                position_size = quantity;
+                                                position_side = Some(Side::Ask);
+                                                println!("订单ID: {}", market_order.id);
+                                            },
+                                            Order::Limit(limit_order) => {
+                                                let order_id = limit_order.id.clone();
+                                                current_order_id = Some(order_id);
+                                                position_size = quantity;
+                                                position_side = Some(Side::Ask);
+                                                println!("订单ID: {}", limit_order.id);
+                                            }
                                         }
-                                    }
-                                },
-                                Err(e) => eprintln!("卖出订单失败: {:?}", e),
+                                    },
+                                    Err(e) => {
+                                        eprintln!("做空订单失败: {:?}", e);
+                                        if e.to_string().to_lowercase().contains("invalid symbol") {
+                                            eprintln!("错误: 交易对 {} 可能不存在或格式不正确", symbol);
+                                            break;
+                                        }
+                                    },
+                                }
+                            } else {
+                                println!("已经持有空头仓位，无需操作");
                             }
                         },
                         _ => println!("无交易信号"),
@@ -227,7 +267,13 @@ async fn main() {
                         if total_trades > 0 { (successful_trades as f64 / total_trades as f64) * 100.0 } else { 0.0 });
                 }
             },
-            Err(err) => eprintln!("获取K线数据失败: {:?}", err),
+            Err(err) => {
+                eprintln!("获取K线数据失败: {:?}", err);
+                if err.to_string().to_lowercase().contains("invalid symbol") {
+                    eprintln!("错误: 交易对 {} 可能不存在或格式不正确", symbol);
+                    break;
+                }
+            },
         }
 
         // 等待一段时间再进行下一次检查
