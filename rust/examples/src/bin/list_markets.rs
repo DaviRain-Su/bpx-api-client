@@ -1,5 +1,4 @@
 use bpx_api_client::{BpxClient, BACKPACK_API_BASE_URL};
-use bpx_api_types::markets::{Market, Ticker};
 use std::env;
 use chrono::Local;
 use serde_json::json;
