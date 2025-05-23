@@ -1,5 +1,6 @@
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
+use strum::{Display, EnumString};
 
 use crate::Blockchain;
 
@@ -183,7 +184,7 @@ pub struct Kline {
     pub close: Option<Decimal>,
     pub end: Option<String>,
     pub volume: Decimal,
-    pub trades: u64,
+    pub trades: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -202,6 +203,43 @@ pub struct MarkPrice {
     pub index_price: Decimal,
     pub mark_price: Decimal,
     pub next_funding_timestamp: u64,
+}
+
+#[derive(Debug, Display, Clone, Copy, Serialize, Deserialize, Default, EnumString, PartialEq, Eq, Hash)]
+#[strum(serialize_all = "lowercase")]
+#[serde(rename_all = "lowercase")]
+pub enum KlineInterval {
+    #[default]
+    #[strum(serialize = "1m")]
+    OneMinute,
+    #[strum(serialize = "3m")]
+    ThreeMinutes,
+    #[strum(serialize = "5m")]
+    FiveMinutes,
+    #[strum(serialize = "15m")]
+    FifteenMinutes,
+    #[strum(serialize = "30m")]
+    ThirtyMinutes,
+    #[strum(serialize = "1h")]
+    OneHour,
+    #[strum(serialize = "2h")]
+    TwoHours,
+    #[strum(serialize = "4h")]
+    FourHours,
+    #[strum(serialize = "6h")]
+    SixHours,
+    #[strum(serialize = "8h")]
+    EightHours,
+    #[strum(serialize = "12h")]
+    TwelveHours,
+    #[strum(serialize = "1d")]
+    OneDay,
+    #[strum(serialize = "3d")]
+    ThreeDays,
+    #[strum(serialize = "1w")]
+    OneWeek,
+    #[strum(serialize = "1M")]
+    OneMonth,
 }
 
 #[cfg(test)]

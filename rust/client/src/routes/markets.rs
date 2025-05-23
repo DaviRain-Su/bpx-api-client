@@ -1,4 +1,4 @@
-use bpx_api_types::markets::{Asset, FundingRate, Kline, MarkPrice, Market, OrderBookDepth, Ticker};
+use bpx_api_types::markets::{Asset, FundingRate, Kline, KlineInterval, MarkPrice, Market, OrderBookDepth, Ticker};
 
 use crate::error::Result;
 use crate::BpxClient;
@@ -66,20 +66,21 @@ impl BpxClient {
     pub async fn get_k_lines(
         &self,
         symbol: &str,
-        kline_interval: &str,
+        kline_interval: KlineInterval,
         start_time: Option<i64>,
         end_time: Option<i64>,
     ) -> Result<Vec<Kline>> {
         let mut url = format!(
-            "/{}{}?symbol={}&kline_interval={}",
+            "{}{}?symbol={}&interval={}",
             self.base_url, API_KLINES, symbol, kline_interval
         );
-        for (k, v) in [("start_time", start_time), ("end_time", end_time)] {
+        for (k, v) in [("startTime", start_time), ("endTime", end_time)] {
             if let Some(v) = v {
                 url.push_str(&format!("&{}={}", k, v));
             }
         }
         let res = self.get(url).await?;
         res.json().await.map_err(Into::into)
+    
     }
 }
