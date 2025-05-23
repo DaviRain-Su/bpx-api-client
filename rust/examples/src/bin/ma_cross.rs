@@ -65,7 +65,7 @@ async fn main() {
         .expect("Failed to initialize Backpack API client");
 
     // 交易参数设置
-    let symbol = "FARTCOIN_USD";  // 期货合约交易对
+    let symbol = "FARTCOIN_USDC_PERP";  // 期货合约交易对
     let interval = KlineInterval::OneHour;  // 1小时K线
     let trade_amount = dec!(100); // 每次交易金额（USDC）
     let mut current_order_id: Option<String> = None;

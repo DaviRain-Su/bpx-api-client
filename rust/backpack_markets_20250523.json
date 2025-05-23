@@ -1,0 +1,1459 @@
+{
+  "markets": [
+    {
+      "base_symbol": "SOL",
+      "market_type": "spot",
+      "price_precision": 2,
+      "quantity_precision": 2,
+      "quote_symbol": "USDC",
+      "symbol": "SOL_USDC"
+    },
+    {
+      "base_symbol": "PYTH",
+      "market_type": "spot",
+      "price_precision": 4,
+      "quantity_precision": 1,
+      "quote_symbol": "USDC",
+      "symbol": "PYTH_USDC"
+    },
+    {
+      "base_symbol": "JTO",
+      "market_type": "spot",
+      "price_precision": 4,
+      "quantity_precision": 1,
+      "quote_symbol": "USDC",
+      "symbol": "JTO_USDC"
+    },
+    {
+      "base_symbol": "HNT",
+      "market_type": "spot",
+      "price_precision": 3,
+      "quantity_precision": 1,
+      "quote_symbol": "USDC",
+      "symbol": "HNT_USDC"
+    },
+    {
+      "base_symbol": "MOBILE",
+      "market_type": "spot",
+      "price_precision": 7,
+      "quantity_precision": 0,
+      "quote_symbol": "USDC",
+      "symbol": "MOBILE_USDC"
+    },
+    {
+      "base_symbol": "BONK",
+      "market_type": "spot",
+      "price_precision": 9,
+      "quantity_precision": 0,
+      "quote_symbol": "USDC",
+      "symbol": "BONK_USDC"
+    },
+    {
+      "base_symbol": "WIF",
+      "market_type": "spot",
+      "price_precision": 4,
+      "quantity_precision": 1,
+      "quote_symbol": "USDC",
+      "symbol": "WIF_USDC"
+    },
+    {
+      "base_symbol": "USDT",
+      "market_type": "spot",
+      "price_precision": 4,
+      "quantity_precision": 0,
+      "quote_symbol": "USDC",
+      "symbol": "USDT_USDC"
+    },
+    {
+      "base_symbol": "JUP",
+      "market_type": "spot",
+      "price_precision": 4,
+      "quantity_precision": 2,
+      "quote_symbol": "USDC",
+      "symbol": "JUP_USDC"
+    },
+    {
+      "base_symbol": "RENDER",
+      "market_type": "spot",
+      "price_precision": 3,
+      "quantity_precision": 2,
+      "quote_symbol": "USDC",
+      "symbol": "RENDER_USDC"
+    },
+    {
+      "base_symbol": "WEN",
+      "market_type": "spot",
+      "price_precision": 8,
+      "quantity_precision": 0,
+      "quote_symbol": "USDC",
+      "symbol": "WEN_USDC"
+    },
+    {
+      "base_symbol": "BTC",
+      "market_type": "spot",
+      "price_precision": 1,
+      "quantity_precision": 5,
+      "quote_symbol": "USDC",
+      "symbol": "BTC_USDC"
+    },
+    {
+      "base_symbol": "W",
+      "market_type": "spot",
+      "price_precision": 4,
+      "quantity_precision": 2,
+      "quote_symbol": "USDC",
+      "symbol": "W_USDC"
+    },
+    {
+      "base_symbol": "TNSR",
+      "market_type": "spot",
+      "price_precision": 4,
+      "quantity_precision": 2,
+      "quote_symbol": "USDC",
+      "symbol": "TNSR_USDC"
+    },
+    {
+      "base_symbol": "PRCL",
+      "market_type": "spot",
+      "price_precision": 4,
+      "quantity_precision": 2,
+      "quote_symbol": "USDC",
+      "symbol": "PRCL_USDC"
+    },
+    {
+      "base_symbol": "MEW",
+      "market_type": "spot",
+      "price_precision": 6,
+      "quantity_precision": 1,
+      "quote_symbol": "USDC",
+      "symbol": "MEW_USDC"
+    },
+    {
+      "base_symbol": "BOME",
+      "market_type": "spot",
+      "price_precision": 6,
+      "quantity_precision": 1,
+      "quote_symbol": "USDC",
+      "symbol": "BOME_USDC"
+    },
+    {
+      "base_symbol": "RAY",
+      "market_type": "spot",
+      "price_precision": 4,
+      "quantity_precision": 2,
+      "quote_symbol": "USDC",
+      "symbol": "RAY_USDC"
+    },
+    {
+      "base_symbol": "HONEY",
+      "market_type": "spot",
+      "price_precision": 5,
+      "quantity_precision": 2,
+      "quote_symbol": "USDC",
+      "symbol": "HONEY_USDC"
+    },
+    {
+      "base_symbol": "KMNO",
+      "market_type": "spot",
+      "price_precision": 5,
+      "quantity_precision": 2,
+      "quote_symbol": "USDC",
+      "symbol": "KMNO_USDC"
+    },
+    {
+      "base_symbol": "ETH",
+      "market_type": "spot",
+      "price_precision": 2,
+      "quantity_precision": 4,
+      "quote_symbol": "USDC",
+      "symbol": "ETH_USDC"
+    },
+    {
+      "base_symbol": "DRIFT",
+      "market_type": "spot",
+      "price_precision": 4,
+      "quantity_precision": 2,
+      "quote_symbol": "USDC",
+      "symbol": "DRIFT_USDC"
+    },
+    {
+      "base_symbol": "SHFL",
+      "market_type": "spot",
+      "price_precision": 4,
+      "quantity_precision": 2,
+      "quote_symbol": "USDC",
+      "symbol": "SHFL_USDC"
+    },
+    {
+      "base_symbol": "PEPE",
+      "market_type": "spot",
+      "price_precision": 9,
+      "quantity_precision": 0,
+      "quote_symbol": "USDC",
+      "symbol": "PEPE_USDC"
+    },
+    {
+      "base_symbol": "SHIB",
+      "market_type": "spot",
+      "price_precision": 9,
+      "quantity_precision": 0,
+      "quote_symbol": "USDC",
+      "symbol": "SHIB_USDC"
+    },
+    {
+      "base_symbol": "LINK",
+      "market_type": "spot",
+      "price_precision": 3,
+      "quantity_precision": 3,
+      "quote_symbol": "USDC",
+      "symbol": "LINK_USDC"
+    },
+    {
+      "base_symbol": "UNI",
+      "market_type": "spot",
+      "price_precision": 3,
+      "quantity_precision": 3,
+      "quote_symbol": "USDC",
+      "symbol": "UNI_USDC"
+    },
+    {
+      "base_symbol": "ONDO",
+      "market_type": "spot",
+      "price_precision": 4,
+      "quantity_precision": 2,
+      "quote_symbol": "USDC",
+      "symbol": "ONDO_USDC"
+    },
+    {
+      "base_symbol": "STRK",
+      "market_type": "spot",
+      "price_precision": 4,
+      "quantity_precision": 2,
+      "quote_symbol": "USDC",
+      "symbol": "STRK_USDC"
+    },
+    {
+      "base_symbol": "BLUR",
+      "market_type": "spot",
+      "price_precision": 5,
+      "quantity_precision": 2,
+      "quote_symbol": "USDC",
+      "symbol": "BLUR_USDC"
+    },
+    {
+      "base_symbol": "WLD",
+      "market_type": "spot",
+      "price_precision": 4,
+      "quantity_precision": 3,
+      "quote_symbol": "USDC",
+      "symbol": "WLD_USDC"
+    },
+    {
+      "base_symbol": "ZKJ",
+      "market_type": "spot",
+      "price_precision": 4,
+      "quantity_precision": 2,
+      "quote_symbol": "USDC",
+      "symbol": "ZKJ_USDC"
+    },
+    {
+      "base_symbol": "IO",
+      "market_type": "spot",
+      "price_precision": 4,
+      "quantity_precision": 2,
+      "quote_symbol": "USDC",
+      "symbol": "IO_USDC"
+    },
+    {
+      "base_symbol": "ZRO",
+      "market_type": "spot",
+      "price_precision": 4,
+      "quantity_precision": 2,
+      "quote_symbol": "USDC",
+      "symbol": "ZRO_USDC"
+    },
+    {
+      "base_symbol": "ZEX",
+      "market_type": "spot",
+      "price_precision": 5,
+      "quantity_precision": 2,
+      "quote_symbol": "USDC",
+      "symbol": "ZEX_USDC"
+    },
+    {
+      "base_symbol": "LDO",
+      "market_type": "spot",
+      "price_precision": 4,
+      "quantity_precision": 2,
+      "quote_symbol": "USDC",
+      "symbol": "LDO_USDC"
+    },
+    {
+      "base_symbol": "AAVE",
+      "market_type": "spot",
+      "price_precision": 2,
+      "quantity_precision": 3,
+      "quote_symbol": "USDC",
+      "symbol": "AAVE_USDC"
+    },
+    {
+      "base_symbol": "CLOUD",
+      "market_type": "spot",
+      "price_precision": 4,
+      "quantity_precision": 2,
+      "quote_symbol": "USDC",
+      "symbol": "CLOUD_USDC"
+    },
+    {
+      "base_symbol": "POL",
+      "market_type": "spot",
+      "price_precision": 4,
+      "quantity_precision": 2,
+      "quote_symbol": "USDC",
+      "symbol": "POL_USDC"
+    },
+    {
+      "base_symbol": "MOODENG",
+      "market_type": "spot",
+      "price_precision": 5,
+      "quantity_precision": 2,
+      "quote_symbol": "USDC",
+      "symbol": "MOODENG_USDC"
+    },
+    {
+      "base_symbol": "DBR",
+      "market_type": "spot",
+      "price_precision": 5,
+      "quantity_precision": 2,
+      "quote_symbol": "USDC",
+      "symbol": "DBR_USDC"
+    },
+    {
+      "base_symbol": "ACT",
+      "market_type": "spot",
+      "price_precision": 4,
+      "quantity_precision": 2,
+      "quote_symbol": "USDC",
+      "symbol": "ACT_USDC"
+    },
+    {
+      "base_symbol": "GOAT",
+      "market_type": "spot",
+      "price_precision": 4,
+      "quantity_precision": 2,
+      "quote_symbol": "USDC",
+      "symbol": "GOAT_USDC"
+    },
+    {
+      "base_symbol": "APE",
+      "market_type": "spot",
+      "price_precision": 4,
+      "quantity_precision": 2,
+      "quote_symbol": "USDC",
+      "symbol": "APE_USDC"
+    },
+    {
+      "base_symbol": "ENA",
+      "market_type": "spot",
+      "price_precision": 4,
+      "quantity_precision": 2,
+      "quote_symbol": "USDC",
+      "symbol": "ENA_USDC"
+    },
+    {
+      "base_symbol": "ME",
+      "market_type": "spot",
+      "price_precision": 4,
+      "quantity_precision": 2,
+      "quote_symbol": "USDC",
+      "symbol": "ME_USDC"
+    },
+    {
+      "base_symbol": "PENGU",
+      "market_type": "spot",
+      "price_precision": 5,
+      "quantity_precision": 2,
+      "quote_symbol": "USDC",
+      "symbol": "PENGU_USDC"
+    },
+    {
+      "base_symbol": "SOL",
+      "market_type": "spot",
+      "price_precision": 2,
+      "quantity_precision": 2,
+      "quote_symbol": "USDC",
+      "symbol": "SOL_USDC_PERP"
+    },
+    {
+      "base_symbol": "BTC",
+      "market_type": "spot",
+      "price_precision": 1,
+      "quantity_precision": 5,
+      "quote_symbol": "USDC",
+      "symbol": "BTC_USDC_PERP"
+    },
+    {
+      "base_symbol": "ETH",
+      "market_type": "spot",
+      "price_precision": 2,
+      "quantity_precision": 4,
+      "quote_symbol": "USDC",
+      "symbol": "ETH_USDC_PERP"
+    },
+    {
+      "base_symbol": "SONIC",
+      "market_type": "spot",
+      "price_precision": 5,
+      "quantity_precision": 2,
+      "quote_symbol": "USDC",
+      "symbol": "SONIC_USDC"
+    },
+    {
+      "base_symbol": "TRUMP",
+      "market_type": "spot",
+      "price_precision": 3,
+      "quantity_precision": 3,
+      "quote_symbol": "USDC",
+      "symbol": "TRUMP_USDC"
+    },
+    {
+      "base_symbol": "MELANIA",
+      "market_type": "spot",
+      "price_precision": 3,
+      "quantity_precision": 3,
+      "quote_symbol": "USDC",
+      "symbol": "MELANIA_USDC"
+    },
+    {
+      "base_symbol": "J",
+      "market_type": "spot",
+      "price_precision": 4,
+      "quantity_precision": 2,
+      "quote_symbol": "USDC",
+      "symbol": "J_USDC"
+    },
+    {
+      "base_symbol": "XRP",
+      "market_type": "spot",
+      "price_precision": 4,
+      "quantity_precision": 4,
+      "quote_symbol": "USDC",
+      "symbol": "XRP_USDC_PERP"
+    },
+    {
+      "base_symbol": "SUI",
+      "market_type": "spot",
+      "price_precision": 4,
+      "quantity_precision": 2,
+      "quote_symbol": "USDC",
+      "symbol": "SUI_USDC_PERP"
+    },
+    {
+      "base_symbol": "DOGE",
+      "market_type": "spot",
+      "price_precision": 5,
+      "quantity_precision": 1,
+      "quote_symbol": "USDC",
+      "symbol": "DOGE_USDC_PERP"
+    },
+    {
+      "base_symbol": "JUP",
+      "market_type": "spot",
+      "price_precision": 4,
+      "quantity_precision": 1,
+      "quote_symbol": "USDC",
+      "symbol": "JUP_USDC_PERP"
+    },
+    {
+      "base_symbol": "TRUMP",
+      "market_type": "spot",
+      "price_precision": 3,
+      "quantity_precision": 2,
+      "quote_symbol": "USDC",
+      "symbol": "TRUMP_USDC_PERP"
+    },
+    {
+      "base_symbol": "WIF",
+      "market_type": "spot",
+      "price_precision": 4,
+      "quantity_precision": 1,
+      "quote_symbol": "USDC",
+      "symbol": "WIF_USDC_PERP"
+    },
+    {
+      "base_symbol": "BERA",
+      "market_type": "spot",
+      "price_precision": 4,
+      "quantity_precision": 1,
+      "quote_symbol": "USDC",
+      "symbol": "BERA_USDC_PERP"
+    },
+    {
+      "base_symbol": "LTC",
+      "market_type": "spot",
+      "price_precision": 2,
+      "quantity_precision": 1,
+      "quote_symbol": "USDC",
+      "symbol": "LTC_USDC_PERP"
+    },
+    {
+      "base_symbol": "ADA",
+      "market_type": "spot",
+      "price_precision": 4,
+      "quantity_precision": 0,
+      "quote_symbol": "USDC",
+      "symbol": "ADA_USDC_PERP"
+    },
+    {
+      "base_symbol": "LINK",
+      "market_type": "spot",
+      "price_precision": 3,
+      "quantity_precision": 1,
+      "quote_symbol": "USDC",
+      "symbol": "LINK_USDC_PERP"
+    },
+    {
+      "base_symbol": "IP",
+      "market_type": "spot",
+      "price_precision": 4,
+      "quantity_precision": 1,
+      "quote_symbol": "USDC",
+      "symbol": "IP_USDC_PERP"
+    },
+    {
+      "base_symbol": "HYPE",
+      "market_type": "spot",
+      "price_precision": 3,
+      "quantity_precision": 2,
+      "quote_symbol": "USDC",
+      "symbol": "HYPE_USDC_PERP"
+    },
+    {
+      "base_symbol": "BNB",
+      "market_type": "spot",
+      "price_precision": 2,
+      "quantity_precision": 3,
+      "quote_symbol": "USDC",
+      "symbol": "BNB_USDC_PERP"
+    },
+    {
+      "base_symbol": "AVAX",
+      "market_type": "spot",
+      "price_precision": 3,
+      "quantity_precision": 2,
+      "quote_symbol": "USDC",
+      "symbol": "AVAX_USDC_PERP"
+    },
+    {
+      "base_symbol": "S",
+      "market_type": "spot",
+      "price_precision": 4,
+      "quantity_precision": 0,
+      "quote_symbol": "USDC",
+      "symbol": "S_USDC_PERP"
+    },
+    {
+      "base_symbol": "ONDO",
+      "market_type": "spot",
+      "price_precision": 4,
+      "quantity_precision": 1,
+      "quote_symbol": "USDC",
+      "symbol": "ONDO_USDC_PERP"
+    },
+    {
+      "base_symbol": "KAITO",
+      "market_type": "spot",
+      "price_precision": 4,
+      "quantity_precision": 1,
+      "quote_symbol": "USDC",
+      "symbol": "KAITO_USDC_PERP"
+    },
+    {
+      "base_symbol": "ARB",
+      "market_type": "spot",
+      "price_precision": 4,
+      "quantity_precision": 1,
+      "quote_symbol": "USDC",
+      "symbol": "ARB_USDC_PERP"
+    },
+    {
+      "base_symbol": "ENA",
+      "market_type": "spot",
+      "price_precision": 4,
+      "quantity_precision": 1,
+      "quote_symbol": "USDC",
+      "symbol": "ENA_USDC_PERP"
+    },
+    {
+      "base_symbol": "AAVE",
+      "market_type": "spot",
+      "price_precision": 2,
+      "quantity_precision": 2,
+      "quote_symbol": "USDC",
+      "symbol": "AAVE_USDC_PERP"
+    },
+    {
+      "base_symbol": "DOT",
+      "market_type": "spot",
+      "price_precision": 3,
+      "quantity_precision": 1,
+      "quote_symbol": "USDC",
+      "symbol": "DOT_USDC_PERP"
+    },
+    {
+      "base_symbol": "FARTCOIN",
+      "market_type": "spot",
+      "price_precision": 4,
+      "quantity_precision": 1,
+      "quote_symbol": "USDC",
+      "symbol": "FARTCOIN_USDC_PERP"
+    },
+    {
+      "base_symbol": "SUI",
+      "market_type": "spot",
+      "price_precision": 4,
+      "quantity_precision": 1,
+      "quote_symbol": "USDC",
+      "symbol": "SUI_USDC"
+    }
+  ],
+  "tickers": [
+    {
+      "first_price": "254.28",
+      "high": "263.08",
+      "last_price": "262.04",
+      "low": "251.87",
+      "price_change": "7.76",
+      "price_change_percent": "0.030518",
+      "symbol": "AAVE_USDC",
+      "trades": "239",
+      "volume": "363.664"
+    },
+    {
+      "first_price": "257",
+      "high": "264.24",
+      "last_price": "262.29",
+      "low": "250.96",
+      "price_change": "5.29",
+      "price_change_percent": "0.020584",
+      "symbol": "AAVE_USDC_PERP",
+      "trades": "11647",
+      "volume": "12331.58"
+    },
+    {
+      "first_price": "0.066",
+      "high": "0.0723",
+      "last_price": "0.0709",
+      "low": "0.0642",
+      "price_change": "0.0049",
+      "price_change_percent": "0.074242",
+      "symbol": "ACT_USDC",
+      "trades": "47",
+      "volume": "32718.31"
+    },
+    {
+      "first_price": "0.7913",
+      "high": "0.832",
+      "last_price": "0.8319",
+      "low": "0.7839",
+      "price_change": "0.0406",
+      "price_change_percent": "0.051308",
+      "symbol": "ADA_USDC_PERP",
+      "trades": "1068",
+      "volume": "754586"
+    },
+    {
+      "first_price": "0.7001",
+      "high": "0.7386",
+      "last_price": "0.715",
+      "low": "0.6296",
+      "price_change": "0.0149",
+      "price_change_percent": "0.021283",
+      "symbol": "APE_USDC",
+      "trades": "1123",
+      "volume": "407.71"
+    },
+    {
+      "first_price": "0.4235",
+      "high": "0.4444",
+      "last_price": "0.4423",
+      "low": "0.4175",
+      "price_change": "0.0188",
+      "price_change_percent": "0.044392",
+      "symbol": "ARB_USDC_PERP",
+      "trades": "3936",
+      "volume": "1228615"
+    },
+    {
+      "first_price": "23.86",
+      "high": "25.864",
+      "last_price": "25.727",
+      "low": "23.732",
+      "price_change": "1.867",
+      "price_change_percent": "0.078248",
+      "symbol": "AVAX_USDC_PERP",
+      "trades": "8139",
+      "volume": "76598.49"
+    },
+    {
+      "first_price": "3.2495",
+      "high": "3.466",
+      "last_price": "3.4312",
+      "low": "3.1825",
+      "price_change": "0.1817",
+      "price_change_percent": "0.055916",
+      "symbol": "BERA_USDC_PERP",
+      "trades": "5938",
+      "volume": "653201.9"
+    },
+    {
+      "first_price": "0.115",
+      "high": "0.12",
+      "last_price": "0.095",
+      "low": "0.095",
+      "price_change": "-0.02",
+      "price_change_percent": "-0.173913",
+      "symbol": "BLUR_USDC",
+      "trades": "13",
+      "volume": "54.99"
+    },
+    {
+      "first_price": "688.24",
+      "high": "691.28",
+      "last_price": "688.65",
+      "low": "679.18",
+      "price_change": "0.41",
+      "price_change_percent": "0.000596",
+      "symbol": "BNB_USDC_PERP",
+      "trades": "11190",
+      "volume": "9867.595"
+    },
+    {
+      "first_price": "0.002487",
+      "high": "0.002783",
+      "last_price": "0.002767",
+      "low": "0.002417",
+      "price_change": "0.00028",
+      "price_change_percent": "0.112585",
+      "symbol": "BOME_USDC",
+      "trades": "73",
+      "volume": "1008839.8"
+    },
+    {
+      "first_price": "0.000021445",
+      "high": "0.000024112",
+      "last_price": "0.000023659",
+      "low": "0.000021036",
+      "price_change": "0.000002214",
+      "price_change_percent": "0.103241",
+      "symbol": "BONK_USDC",
+      "trades": "8443",
+      "volume": "2015427771"
+    },
+    {
+      "first_price": "111742.3",
+      "high": "112005.3",
+      "last_price": "111126.1",
+      "low": "110294.4",
+      "price_change": "-616.2",
+      "price_change_percent": "-0.005514",
+      "symbol": "BTC_USDC",
+      "trades": "13637",
+      "volume": "64.07775"
+    },
+    {
+      "first_price": "111765.8",
+      "high": "111983.5",
+      "last_price": "111103.9",
+      "low": "110266.3",
+      "price_change": "-661.9",
+      "price_change_percent": "-0.005922",
+      "symbol": "BTC_USDC_PERP",
+      "trades": "101998",
+      "volume": "2119.76966"
+    },
+    {
+      "first_price": "0.0874",
+      "high": "0.09",
+      "last_price": "0.0898",
+      "low": "0.0872",
+      "price_change": "0.0024",
+      "price_change_percent": "0.02746",
+      "symbol": "CLOUD_USDC",
+      "trades": "196",
+      "volume": "57502.31"
+    },
+    {
+      "first_price": "0.24282",
+      "high": "0.25463",
+      "last_price": "0.25023",
+      "low": "0.2367",
+      "price_change": "0.00741",
+      "price_change_percent": "0.030516",
+      "symbol": "DOGE_USDC_PERP",
+      "trades": "20819",
+      "volume": "30566100.5"
+    },
+    {
+      "first_price": "4.86",
+      "high": "5.1",
+      "last_price": "5.093",
+      "low": "4.785",
+      "price_change": "0.233",
+      "price_change_percent": "0.047942",
+      "symbol": "DOT_USDC_PERP",
+      "trades": "2903",
+      "volume": "150450.2"
+    },
+    {
+      "first_price": "0.6665",
+      "high": "0.7049",
+      "last_price": "0.7049",
+      "low": "0.6658",
+      "price_change": "0.0384",
+      "price_change_percent": "0.057614",
+      "symbol": "DRIFT_USDC",
+      "trades": "26",
+      "volume": "2781.8"
+    },
+    {
+      "first_price": "0.4125",
+      "high": "0.4481",
+      "last_price": "0.4434",
+      "low": "0.3997",
+      "price_change": "0.0309",
+      "price_change_percent": "0.074909",
+      "symbol": "ENA_USDC",
+      "trades": "1542",
+      "volume": "161916.83"
+    },
+    {
+      "first_price": "0.4128",
+      "high": "0.4476",
+      "last_price": "0.4436",
+      "low": "0.3988",
+      "price_change": "0.0308",
+      "price_change_percent": "0.074612",
+      "symbol": "ENA_USDC_PERP",
+      "trades": "3471",
+      "volume": "3256123.8"
+    },
+    {
+      "first_price": "2646.34",
+      "high": "2733",
+      "last_price": "2721.59",
+      "low": "2602.89",
+      "price_change": "75.25",
+      "price_change_percent": "0.028435",
+      "symbol": "ETH_USDC",
+      "trades": "12284",
+      "volume": "4432.1449"
+    },
+    {
+      "first_price": "2646.45",
+      "high": "2734.63",
+      "last_price": "2720.07",
+      "low": "2601.65",
+      "price_change": "73.62",
+      "price_change_percent": "0.027818",
+      "symbol": "ETH_USDC_PERP",
+      "trades": "90791",
+      "volume": "50593.8942"
+    },
+    {
+      "first_price": "1.4922",
+      "high": "1.6393",
+      "last_price": "1.6241",
+      "low": "1.4372",
+      "price_change": "0.1319",
+      "price_change_percent": "0.088393",
+      "symbol": "FARTCOIN_USDC_PERP",
+      "trades": "20844",
+      "volume": "9736069.9"
+    },
+    {
+      "first_price": "0.1706",
+      "high": "0.1883",
+      "last_price": "0.1883",
+      "low": "0.1654",
+      "price_change": "0.0177",
+      "price_change_percent": "0.103751",
+      "symbol": "GOAT_USDC",
+      "trades": "27",
+      "volume": "3956.47"
+    },
+    {
+      "first_price": "4.111",
+      "high": "4.317",
+      "last_price": "4.253",
+      "low": "4.027",
+      "price_change": "0.142",
+      "price_change_percent": "0.034541",
+      "symbol": "HNT_USDC",
+      "trades": "143",
+      "volume": "710.4"
+    },
+    {
+      "first_price": "0.02818",
+      "high": "0.02818",
+      "last_price": "0.02818",
+      "low": "0.02818",
+      "price_change": "0",
+      "price_change_percent": "0",
+      "symbol": "HONEY_USDC",
+      "trades": "1",
+      "volume": "568"
+    },
+    {
+      "first_price": "30.414",
+      "high": "36.245",
+      "last_price": "35.923",
+      "low": "30.166",
+      "price_change": "5.509",
+      "price_change_percent": "0.181134",
+      "symbol": "HYPE_USDC_PERP",
+      "trades": "17445",
+      "volume": "351936.66"
+    },
+    {
+      "first_price": "1.0462",
+      "high": "1.1859",
+      "last_price": "1.156",
+      "low": "1.0349",
+      "price_change": "0.1098",
+      "price_change_percent": "0.104951",
+      "symbol": "IO_USDC",
+      "trades": "2614",
+      "volume": "18951.04"
+    },
+    {
+      "first_price": "4.5185",
+      "high": "4.9332",
+      "last_price": "4.8174",
+      "low": "4.444",
+      "price_change": "0.2989",
+      "price_change_percent": "0.06615",
+      "symbol": "IP_USDC_PERP",
+      "trades": "3322",
+      "volume": "87549.2"
+    },
+    {
+      "first_price": "2.0822",
+      "high": "2.2125",
+      "last_price": "2.1987",
+      "low": "2.0627",
+      "price_change": "0.1165",
+      "price_change_percent": "0.05595",
+      "symbol": "JTO_USDC",
+      "trades": "330",
+      "volume": "17075.7"
+    },
+    {
+      "first_price": "0.5362",
+      "high": "0.6332",
+      "last_price": "0.6193",
+      "low": "0.5301",
+      "price_change": "0.0831",
+      "price_change_percent": "0.154979",
+      "symbol": "JUP_USDC",
+      "trades": "3843",
+      "volume": "468567.54"
+    },
+    {
+      "first_price": "0.5362",
+      "high": "0.6329",
+      "last_price": "0.6199",
+      "low": "0.5298",
+      "price_change": "0.0837",
+      "price_change_percent": "0.156098",
+      "symbol": "JUP_USDC_PERP",
+      "trades": "24171",
+      "volume": "9720533.4"
+    },
+    {
+      "first_price": "0.2245",
+      "high": "0.226",
+      "last_price": "0.2246",
+      "low": "0.222",
+      "price_change": "0.0001",
+      "price_change_percent": "0.000445",
+      "symbol": "J_USDC",
+      "trades": "7",
+      "volume": "807.86"
+    },
+    {
+      "first_price": "2.1279",
+      "high": "2.207",
+      "last_price": "2.1375",
+      "low": "2.06",
+      "price_change": "0.0096",
+      "price_change_percent": "0.004511",
+      "symbol": "KAITO_USDC_PERP",
+      "trades": "3735",
+      "volume": "808350.9"
+    },
+    {
+      "first_price": "0.07847",
+      "high": "0.07925",
+      "last_price": "0.07767",
+      "low": "0.0763",
+      "price_change": "-0.0008",
+      "price_change_percent": "-0.010195",
+      "symbol": "KMNO_USDC",
+      "trades": "150",
+      "volume": "24738.76"
+    },
+    {
+      "first_price": "0.9431",
+      "high": "1.0033",
+      "last_price": "0.995",
+      "low": "0.9428",
+      "price_change": "0.0519",
+      "price_change_percent": "0.055031",
+      "symbol": "LDO_USDC",
+      "trades": "106",
+      "volume": "6865.22"
+    },
+    {
+      "first_price": "16.5",
+      "high": "17.093",
+      "last_price": "17.032",
+      "low": "16.26",
+      "price_change": "0.532",
+      "price_change_percent": "0.032242",
+      "symbol": "LINK_USDC",
+      "trades": "385",
+      "volume": "9014.055"
+    },
+    {
+      "first_price": "16.506",
+      "high": "17.141",
+      "last_price": "17.119",
+      "low": "16.225",
+      "price_change": "0.613",
+      "price_change_percent": "0.037138",
+      "symbol": "LINK_USDC_PERP",
+      "trades": "5614",
+      "volume": "53152.8"
+    },
+    {
+      "first_price": "99.57",
+      "high": "103.04",
+      "last_price": "102.08",
+      "low": "97.85",
+      "price_change": "2.51",
+      "price_change_percent": "0.025208",
+      "symbol": "LTC_USDC_PERP",
+      "trades": "4883",
+      "volume": "11313.2"
+    },
+    {
+      "first_price": "0.39",
+      "high": "0.401",
+      "last_price": "0.393",
+      "low": "0.362",
+      "price_change": "0.003",
+      "price_change_percent": "0.007692",
+      "symbol": "MELANIA_USDC",
+      "trades": "251",
+      "volume": "175998.469"
+    },
+    {
+      "first_price": "0.003634",
+      "high": "0.004711",
+      "last_price": "0.004545",
+      "low": "0.003581",
+      "price_change": "0.000911",
+      "price_change_percent": "0.250688",
+      "symbol": "MEW_USDC",
+      "trades": "8304",
+      "volume": "1217186.7"
+    },
+    {
+      "first_price": "1.0341",
+      "high": "1.081",
+      "last_price": "1.081",
+      "low": "0.9102",
+      "price_change": "0.0469",
+      "price_change_percent": "0.045353",
+      "symbol": "ME_USDC",
+      "trades": "9",
+      "volume": "939.99"
+    },
+    {
+      "first_price": "0.0005106",
+      "high": "0.0005254",
+      "last_price": "0.0005253",
+      "low": "0.0005106",
+      "price_change": "0.0000147",
+      "price_change_percent": "0.02879",
+      "symbol": "MOBILE_USDC",
+      "trades": "15",
+      "volume": "533517"
+    },
+    {
+      "first_price": "0.2366",
+      "high": "0.33143",
+      "last_price": "0.32047",
+      "low": "0.23089",
+      "price_change": "0.08387",
+      "price_change_percent": "0.35448",
+      "symbol": "MOODENG_USDC",
+      "trades": "607",
+      "volume": "422789.18"
+    },
+    {
+      "first_price": "0.999",
+      "high": "1.05",
+      "last_price": "1.0457",
+      "low": "0.9915",
+      "price_change": "0.0467",
+      "price_change_percent": "0.046747",
+      "symbol": "ONDO_USDC",
+      "trades": "711",
+      "volume": "25891.98"
+    },
+    {
+      "first_price": "1.0034",
+      "high": "1.0529",
+      "last_price": "1.0459",
+      "low": "0.9915",
+      "price_change": "0.0425",
+      "price_change_percent": "0.042356",
+      "symbol": "ONDO_USDC_PERP",
+      "trades": "7608",
+      "volume": "1006350"
+    },
+    {
+      "first_price": "0.01373",
+      "high": "0.015",
+      "last_price": "0.01498",
+      "low": "0.01361",
+      "price_change": "0.00125",
+      "price_change_percent": "0.091042",
+      "symbol": "PENGU_USDC",
+      "trades": "700",
+      "volume": "10572120.21"
+    },
+    {
+      "first_price": "0.000014189",
+      "high": "0.000016326",
+      "last_price": "0.00001587",
+      "low": "0.000013774",
+      "price_change": "0.000001681",
+      "price_change_percent": "0.118472",
+      "symbol": "PEPE_USDC",
+      "trades": "1714",
+      "volume": "7421647464"
+    },
+    {
+      "first_price": "0.2486",
+      "high": "0.256",
+      "last_price": "0.2556",
+      "low": "0.2478",
+      "price_change": "0.007",
+      "price_change_percent": "0.028158",
+      "symbol": "POL_USDC",
+      "trades": "100",
+      "volume": "308646.83"
+    },
+    {
+      "first_price": "0.123",
+      "high": "0.1352",
+      "last_price": "0.1301",
+      "low": "0.111",
+      "price_change": "0.0071",
+      "price_change_percent": "0.057724",
+      "symbol": "PRCL_USDC",
+      "trades": "91",
+      "volume": "16989.89"
+    },
+    {
+      "first_price": "0.1337",
+      "high": "0.1503",
+      "last_price": "0.1476",
+      "low": "0.1331",
+      "price_change": "0.0139",
+      "price_change_percent": "0.103964",
+      "symbol": "PYTH_USDC",
+      "trades": "255",
+      "volume": "257838.9"
+    },
+    {
+      "first_price": "3.4049",
+      "high": "3.5",
+      "last_price": "3.4974",
+      "low": "3.38",
+      "price_change": "0.0925",
+      "price_change_percent": "0.027167",
+      "symbol": "RAY_USDC",
+      "trades": "15",
+      "volume": "617.48"
+    },
+    {
+      "first_price": "4.96",
+      "high": "5.322",
+      "last_price": "5.304",
+      "low": "4.96",
+      "price_change": "0.344",
+      "price_change_percent": "0.069355",
+      "symbol": "RENDER_USDC",
+      "trades": "331",
+      "volume": "12048.09"
+    },
+    {
+      "first_price": "0.2194",
+      "high": "0.2194",
+      "last_price": "0.2194",
+      "low": "0.2194",
+      "price_change": "0",
+      "price_change_percent": "0",
+      "symbol": "SHFL_USDC",
+      "trades": "1",
+      "volume": "186.37"
+    },
+    {
+      "first_price": "0.000015196",
+      "high": "0.000016484",
+      "last_price": "0.00001581",
+      "low": "0.000014097",
+      "price_change": "0.000000614",
+      "price_change_percent": "0.040405",
+      "symbol": "SHIB_USDC",
+      "trades": "1296",
+      "volume": "892307871"
+    },
+    {
+      "first_price": "177.14",
+      "high": "185.42",
+      "last_price": "184.61",
+      "low": "175.3",
+      "price_change": "7.47",
+      "price_change_percent": "0.04217",
+      "symbol": "SOL_USDC",
+      "trades": "135355",
+      "volume": "145248.21"
+    },
+    {
+      "first_price": "177.08",
+      "high": "185.36",
+      "last_price": "184.59",
+      "low": "175.24",
+      "price_change": "7.51",
+      "price_change_percent": "0.04241",
+      "symbol": "SOL_USDC_PERP",
+      "trades": "163159",
+      "volume": "908977.52"
+    },
+    {
+      "first_price": "0.33381",
+      "high": "0.4",
+      "last_price": "0.34857",
+      "low": "0.33",
+      "price_change": "0.01476",
+      "price_change_percent": "0.044217",
+      "symbol": "SONIC_USDC",
+      "trades": "1591",
+      "volume": "144683.92"
+    },
+    {
+      "first_price": "0.1649",
+      "high": "0.1833",
+      "last_price": "0.1831",
+      "low": "0.1648",
+      "price_change": "0.0182",
+      "price_change_percent": "0.11037",
+      "symbol": "STRK_USDC",
+      "trades": "61",
+      "volume": "14870.55"
+    },
+    {
+      "first_price": "4.0605",
+      "high": "4.2003",
+      "last_price": "3.9199",
+      "low": "3.708",
+      "price_change": "-0.1406",
+      "price_change_percent": "-0.034626",
+      "symbol": "SUI_USDC",
+      "trades": "39774",
+      "volume": "1996895.6"
+    },
+    {
+      "first_price": "4.06",
+      "high": "4.1997",
+      "last_price": "3.9228",
+      "low": "3.7175",
+      "price_change": "-0.1372",
+      "price_change_percent": "-0.033793",
+      "symbol": "SUI_USDC_PERP",
+      "trades": "85382",
+      "volume": "18040480.17"
+    },
+    {
+      "first_price": "0.5236",
+      "high": "0.5416",
+      "last_price": "0.5394",
+      "low": "0.5177",
+      "price_change": "0.0158",
+      "price_change_percent": "0.030176",
+      "symbol": "S_USDC_PERP",
+      "trades": "5683",
+      "volume": "1843805"
+    },
+    {
+      "first_price": "0.1655",
+      "high": "0.173",
+      "last_price": "0.1725",
+      "low": "0.1655",
+      "price_change": "0.007",
+      "price_change_percent": "0.042296",
+      "symbol": "TNSR_USDC",
+      "trades": "203",
+      "volume": "18268.47"
+    },
+    {
+      "first_price": "14.687",
+      "high": "16.052",
+      "last_price": "14.478",
+      "low": "13.972",
+      "price_change": "-0.209",
+      "price_change_percent": "-0.01423",
+      "symbol": "TRUMP_USDC",
+      "trades": "2273",
+      "volume": "21449.913"
+    },
+    {
+      "first_price": "14.695",
+      "high": "15.939",
+      "last_price": "14.49",
+      "low": "13.94",
+      "price_change": "-0.205",
+      "price_change_percent": "-0.01395",
+      "symbol": "TRUMP_USDC_PERP",
+      "trades": "25576",
+      "volume": "1072627.15"
+    },
+    {
+      "first_price": "6.437",
+      "high": "6.792",
+      "last_price": "6.71",
+      "low": "6.297",
+      "price_change": "0.273",
+      "price_change_percent": "0.042411",
+      "symbol": "UNI_USDC",
+      "trades": "681",
+      "volume": "12059.774"
+    },
+    {
+      "first_price": "1.0003",
+      "high": "1.0004",
+      "last_price": "1.0001",
+      "low": "1",
+      "price_change": "-0.0002",
+      "price_change_percent": "-0.0002",
+      "symbol": "USDT_USDC",
+      "trades": "3353",
+      "volume": "1229571"
+    },
+    {
+      "first_price": "0.00005974",
+      "high": "0.00006327",
+      "last_price": "0.00006147",
+      "low": "0.000058",
+      "price_change": "0.00000173",
+      "price_change_percent": "0.028959",
+      "symbol": "WEN_USDC",
+      "trades": "13670",
+      "volume": "1017484146"
+    },
+    {
+      "first_price": "1.1539",
+      "high": "1.3708",
+      "last_price": "1.3699",
+      "low": "1.113",
+      "price_change": "0.216",
+      "price_change_percent": "0.187191",
+      "symbol": "WIF_USDC",
+      "trades": "140",
+      "volume": "15552.6"
+    },
+    {
+      "first_price": "1.1583",
+      "high": "1.3911",
+      "last_price": "1.3551",
+      "low": "1.1056",
+      "price_change": "0.1968",
+      "price_change_percent": "0.169904",
+      "symbol": "WIF_USDC_PERP",
+      "trades": "9160",
+      "volume": "3017953.9"
+    },
+    {
+      "first_price": "1.2526",
+      "high": "1.6326",
+      "last_price": "1.5215",
+      "low": "1.2526",
+      "price_change": "0.2689",
+      "price_change_percent": "0.214673",
+      "symbol": "WLD_USDC",
+      "trades": "74",
+      "volume": "4176.01"
+    },
+    {
+      "first_price": "0.1033",
+      "high": "0.1239",
+      "last_price": "0.1107",
+      "low": "0.101",
+      "price_change": "0.0074",
+      "price_change_percent": "0.071636",
+      "symbol": "W_USDC",
+      "trades": "2109",
+      "volume": "632356.15"
+    },
+    {
+      "first_price": "2.4243",
+      "high": "2.4819",
+      "last_price": "2.47",
+      "low": "2.391",
+      "price_change": "0.0457",
+      "price_change_percent": "0.018851",
+      "symbol": "XRP_USDC_PERP",
+      "trades": "12874",
+      "volume": "973562.2004"
+    },
+    {
+      "first_price": "0.02717",
+      "high": "0.02999",
+      "last_price": "0.02986",
+      "low": "0.02717",
+      "price_change": "0.00269",
+      "price_change_percent": "0.099006",
+      "symbol": "ZEX_USDC",
+      "trades": "667",
+      "volume": "165118.42"
+    },
+    {
+      "first_price": "2.0525",
+      "high": "2.0562",
+      "last_price": "2.0533",
+      "low": "2.0424",
+      "price_change": "0.0008",
+      "price_change_percent": "0.00039",
+      "symbol": "ZKJ_USDC",
+      "trades": "52",
+      "volume": "275.85"
+    },
+    {
+      "first_price": "2.8102",
+      "high": "3.0242",
+      "last_price": "3.011",
+      "low": "2.7976",
+      "price_change": "0.2008",
+      "price_change_percent": "0.071454",
+      "symbol": "ZRO_USDC",
+      "trades": "488",
+      "volume": "7802.22"
+    }
+  ],
+  "timestamp": "2025-05-23 11:47:24"
+}
