@@ -1,13 +1,13 @@
 use bpx_api_client::{BpxClient, BACKPACK_API_BASE_URL};
-use bpx_api_types::order::{OrderType, Side, ExecuteOrderPayload, Order};
-use bpx_api_types::markets::{KlineInterval};
-use std::env;
+use bpx_api_types::markets::KlineInterval;
+use bpx_api_types::order::{ExecuteOrderPayload, Order, OrderType, Side};
+use chrono::Local;
 use rust_decimal::prelude::*;
 use rust_decimal_macros::dec;
+use std::collections::HashMap;
+use std::env;
 use std::thread;
 use std::time::Duration;
-use chrono::Local;
-use std::collections::HashMap;
 
 // 格式化价格到指定精度
 fn format_price(price: f64, precision: u32) -> Decimal {
@@ -26,24 +26,28 @@ fn format_quantity(quantity: Decimal, precision: u32) -> Decimal {
 fn calculate_amplitude(klines: &[f64]) -> (f64, f64) {
     let mut positive_amplitudes = Vec::new();
     let mut negative_amplitudes = Vec::new();
-    
-    for i in 0..klines.len()-1 {
-        let change = (klines[i+1] - klines[i]) / klines[i];
+
+    for i in 0..klines.len() - 1 {
+        let change = (klines[i + 1] - klines[i]) / klines[i];
         if change > 0.0 {
             positive_amplitudes.push(change);
         } else {
             negative_amplitudes.push(change.abs());
         }
     }
-    
+
     let avg_positive = if !positive_amplitudes.is_empty() {
         positive_amplitudes.iter().sum::<f64>() / positive_amplitudes.len() as f64
-    } else { 0.0 };
-    
+    } else {
+        0.0
+    };
+
     let avg_negative = if !negative_amplitudes.is_empty() {
         negative_amplitudes.iter().sum::<f64>() / negative_amplitudes.len() as f64
-    } else { 0.0 };
-    
+    } else {
+        0.0
+    };
+
     (avg_positive, avg_negative)
 }
 
@@ -55,21 +59,20 @@ async fn main() {
     println!("=== 网格交易策略启动 ===");
     println!("时间: {}", Local::now().format("%Y-%m-%d %H:%M:%S"));
 
-    let client = BpxClient::init(base_url, &secret, None)
-        .expect("Failed to initialize Backpack API client");
+    let client = BpxClient::init(base_url, &secret, None).expect("Failed to initialize Backpack API client");
 
     // 交易参数设置
-    let symbol = "FARTCOIN_USDC_PERP";  // 期货合约交易对
-    let _leverage = 5;  // 杠杆倍数（暂时未使用）
-    let grid_count = 3;   // 网格数量
+    let symbol = "FARTCOIN_USDC_PERP"; // 期货合约交易对
+    let _leverage = 5; // 杠杆倍数（暂时未使用）
+    let grid_count = 3; // 网格数量
     let trade_amount = dec!(100); // 每个网格的交易金额（USDC）
     let max_position = dec!(300); // 最大持仓量
     let max_drawdown = dec!(0.02); // 最大回撤 2%
-    let mut active_orders: Vec<String> = Vec::new();  // 存储活跃订单
+    let mut active_orders: Vec<String> = Vec::new(); // 存储活跃订单
     let mut last_price: Option<f64> = None;
-    let price_precision = 2;  // 价格精度（小数位数）
-    let quantity_precision = 1;  // 数量精度（小数位数）
-    
+    let price_precision = 2; // 价格精度（小数位数）
+    let quantity_precision = 1; // 数量精度（小数位数）
+
     // 持仓管理
     let mut long_position = Decimal::ZERO;
     let mut short_position = Decimal::ZERO;
@@ -86,16 +89,20 @@ async fn main() {
 
         // 获取K线数据
         let start_time = chrono::Utc::now()
-            .checked_sub_signed(chrono::Duration::minutes(60))  // 获取5分钟的数据
+            .checked_sub_signed(chrono::Duration::minutes(60)) // 获取5分钟的数据
             .unwrap()
             .timestamp();
 
-        match client.get_k_lines(symbol, KlineInterval::OneMinute, Some(start_time), None).await {
+        match client
+            .get_k_lines(symbol, KlineInterval::OneMinute, Some(start_time), None)
+            .await
+        {
             Ok(klines) => {
                 println!("获取到 {} 条K线数据", klines.len());
-                
+
                 // 提取收盘价
-                let closes: Vec<f64> = klines.iter()
+                let closes: Vec<f64> = klines
+                    .iter()
                     .filter_map(|k| {
                         if let Some(close) = k.close.as_ref() {
                             if let Ok(price) = close.to_string().parse::<f64>() {
@@ -118,12 +125,14 @@ async fn main() {
                 // 计算振幅
                 let (avg_positive, avg_negative) = calculate_amplitude(&closes);
                 let current_price = closes.last().unwrap();
-                
+
                 // 打印价格变化
                 if let Some(last) = last_price {
                     let price_change = ((current_price - last) / last) * 100.0;
-                    println!("价格变化: {:.2}% (从 {:.2} 到 {:.2})", 
-                        price_change, last, current_price);
+                    println!(
+                        "价格变化: {:.2}% (从 {:.2} 到 {:.2})",
+                        price_change, last, current_price
+                    );
                 }
                 last_price = Some(*current_price);
 
@@ -174,7 +183,7 @@ async fn main() {
                         // 订单已成交，更新持仓
                         let quantity = trade_amount / entry_price;
                         long_position += quantity;
-                        
+
                         // 设置止盈
                         let tp_price = entry_price * (Decimal::ONE + dec!(0.01)); // 1% 止盈
                         let tp_order = ExecuteOrderPayload {
@@ -200,7 +209,7 @@ async fn main() {
                         // 订单已成交，更新持仓
                         let quantity = trade_amount / entry_price;
                         short_position += quantity;
-                        
+
                         // 设置止盈
                         let tp_price = entry_price * (Decimal::ONE - dec!(0.01)); // 1% 止盈
                         let tp_order = ExecuteOrderPayload {
@@ -266,7 +275,7 @@ async fn main() {
                         let price = current_price * (1.0 - buy_threshold - i as f64 * 0.25 * avg_negative);
                         let formatted_price = format_price(price, price_precision);
                         let quantity = format_quantity(trade_amount / formatted_price, quantity_precision);
-                        
+
                         let order = ExecuteOrderPayload {
                             symbol: symbol.to_string(),
                             side: Side::Bid,
@@ -279,12 +288,14 @@ async fn main() {
                         match client.execute_order(order).await {
                             Ok(order) => {
                                 if let Order::Limit(limit_order) = order {
-                                    println!("买单已提交: ID={}, 价格={}, 数量={}", 
-                                        limit_order.id, formatted_price, quantity);
+                                    println!(
+                                        "买单已提交: ID={}, 价格={}, 数量={}",
+                                        limit_order.id, formatted_price, quantity
+                                    );
                                     active_orders.push(limit_order.id.clone());
                                     buy_entry_prices.insert(limit_order.id, formatted_price);
                                 }
-                            },
+                            }
                             Err(e) => eprintln!("买单失败: {:?}", e),
                         }
                     }
@@ -296,7 +307,7 @@ async fn main() {
                         let price = current_price * (1.0 + sell_threshold + i as f64 * 0.25 * avg_positive);
                         let formatted_price = format_price(price, price_precision);
                         let quantity = format_quantity(trade_amount / formatted_price, quantity_precision);
-                        
+
                         let order = ExecuteOrderPayload {
                             symbol: symbol.to_string(),
                             side: Side::Ask,
@@ -309,12 +320,14 @@ async fn main() {
                         match client.execute_order(order).await {
                             Ok(order) => {
                                 if let Order::Limit(limit_order) = order {
-                                    println!("卖单已提交: ID={}, 价格={}, 数量={}", 
-                                        limit_order.id, formatted_price, quantity);
+                                    println!(
+                                        "卖单已提交: ID={}, 价格={}, 数量={}",
+                                        limit_order.id, formatted_price, quantity
+                                    );
                                     active_orders.push(limit_order.id.clone());
                                     sell_entry_prices.insert(limit_order.id, formatted_price);
                                 }
-                            },
+                            }
                             Err(e) => eprintln!("卖单失败: {:?}", e),
                         }
                     }
@@ -329,7 +342,7 @@ async fn main() {
                 println!("活跃订单数量: {}", active_orders.len());
                 println!("平均正向振幅: {:.4}%", avg_positive * 100.0);
                 println!("平均负向振幅: {:.4}%", avg_negative * 100.0);
-            },
+            }
             Err(e) => {
                 eprintln!("获取K线数据失败: {:?}", e);
                 if e.to_string().to_lowercase().contains("invalid symbol") {
@@ -341,6 +354,6 @@ async fn main() {
 
         // 等待一段时间再进行下一次检查
         println!("\n等待5秒后进行下一次检查...");
-        thread::sleep(Duration::from_secs(5));
+        let _ = tokio::time::sleep(Duration::from_secs(5));
     }
-} 
+}
