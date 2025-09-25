@@ -81,6 +81,5 @@ impl BpxClient {
         }
         let res = self.get(url).await?;
         res.json().await.map_err(Into::into)
-    
     }
 }

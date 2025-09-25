@@ -1,7 +1,7 @@
 use bpx_api_client::{BpxClient, BACKPACK_API_BASE_URL};
-use std::env;
 use chrono::Local;
 use serde_json::json;
+use std::env;
 use std::fs::File;
 use std::io::Write;
 
@@ -14,8 +14,7 @@ async fn main() {
     println!("=== Backpack Exchange 市场数据查询 ===");
     println!("时间: {}", current_time.format("%Y-%m-%d %H:%M:%S"));
 
-    let client = BpxClient::init(base_url, &secret, None)
-        .expect("Failed to initialize Backpack API client");
+    let client = BpxClient::init(base_url, &secret, None).expect("Failed to initialize Backpack API client");
 
     // 用于存储JSON数据的结构
     let mut markets_data = Vec::new();
@@ -26,11 +25,11 @@ async fn main() {
         Ok(markets) => {
             println!("\n=== 支持的市场列表 ===");
             println!("总市场数量: {}", markets.len());
-            
+
             // 按市场类型分组统计
             let mut spot_count = 0;
             let mut futures_count = 0;
-            
+
             for market in &markets {
                 if market.symbol.ends_with("-PERP") {
                     futures_count += 1;
@@ -38,17 +37,24 @@ async fn main() {
                     spot_count += 1;
                 }
             }
-            
+
             println!("现货市场数量: {}", spot_count);
             println!("期货市场数量: {}", futures_count);
-            
+
             // 打印详细市场信息
             println!("\n=== 市场详细信息 ===");
             for market in &markets {
                 println!("\n交易对: {}", market.symbol);
                 println!("基础资产: {}", market.base_symbol);
                 println!("计价资产: {}", market.quote_symbol);
-                println!("市场类型: {}", if market.symbol.ends_with("-PERP") { "期货" } else { "现货" });
+                println!(
+                    "市场类型: {}",
+                    if market.symbol.ends_with("-PERP") {
+                        "期货"
+                    } else {
+                        "现货"
+                    }
+                );
                 println!("价格精度: {}", market.price_decimal_places());
                 println!("数量精度: {}", market.quantity_decimal_places());
 
@@ -62,7 +68,7 @@ async fn main() {
                     "quantity_precision": market.quantity_decimal_places()
                 }));
             }
-        },
+        }
         Err(e) => eprintln!("获取市场数据失败: {:?}", e),
     }
 
@@ -71,7 +77,7 @@ async fn main() {
         Ok(tickers) => {
             println!("\n=== 实时行情数据 ===");
             println!("总交易对数量: {}", tickers.len());
-            
+
             // 打印每个交易对的最新价格和24小时变化
             for ticker in &tickers {
                 println!("\n交易对: {}", ticker.symbol);
@@ -97,7 +103,7 @@ async fn main() {
                     "trades": ticker.trades
                 }));
             }
-        },
+        }
         Err(e) => eprintln!("获取行情数据失败: {:?}", e),
     }
 
@@ -110,7 +116,7 @@ async fn main() {
 
     // 生成文件名（使用当前日期）
     let filename = format!("backpack_markets_{}.json", current_time.format("%Y%m%d"));
-    
+
     // 写入JSON文件
     match File::create(&filename) {
         Ok(mut file) => {
@@ -119,7 +125,7 @@ async fn main() {
             } else {
                 println!("\n数据已导出到文件: {}", filename);
             }
-        },
+        }
         Err(e) => eprintln!("创建JSON文件失败: {:?}", e),
     }
 }

@@ -1,25 +1,33 @@
+use anyhow::{Context, Result};
 use bpx_api_client::{BpxClient, BACKPACK_API_BASE_URL};
 use bpx_api_types::markets::KlineInterval;
-use bpx_api_types::order::{ExecuteOrderPayload, Order, OrderType, Side};
+use bpx_api_types::order::{ExecuteOrderPayload, LimitOrder, Order, OrderType, Side};
 use chrono::Local;
 use rust_decimal::prelude::*;
+use rust_decimal::RoundingStrategy;
 use rust_decimal_macros::dec;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::env;
-use std::thread;
+use std::str::FromStr;
 use std::time::Duration;
+use tokio::time::sleep;
 
 // 格式化价格到指定精度
-fn format_price(price: f64, precision: u32) -> Decimal {
-    let multiplier = 10.0_f64.powi(precision as i32);
+fn format_price(price: f64, precision: u32) -> Option<Decimal> {
+    if !price.is_finite() || price <= 0.0 {
+        return None;
+    }
+    let multiplier = 10u64.checked_pow(precision).unwrap_or(1) as f64;
     let rounded = (price * multiplier).round() / multiplier;
-    Decimal::from_f64(rounded).unwrap()
+    Decimal::from_f64(rounded)
 }
 
 // 格式化数量到指定精度
-fn format_quantity(quantity: Decimal, precision: u32) -> Decimal {
-    let scale = 10u32.pow(precision);
-    (quantity * Decimal::from(scale)).round() / Decimal::from(scale)
+fn format_quantity(quantity: Decimal, precision: u32) -> Option<Decimal> {
+    if quantity <= Decimal::ZERO {
+        return None;
+    }
+    Some(quantity.round_dp_with_strategy(precision, RoundingStrategy::ToZero))
 }
 
 // 计算K线振幅
@@ -51,8 +59,335 @@ fn calculate_amplitude(klines: &[f64]) -> (f64, f64) {
     (avg_positive, avg_negative)
 }
 
+fn parse_decimal_str(value: &str) -> Option<Decimal> {
+    Decimal::from_str(value).ok()
+}
+
+#[derive(Clone, Debug)]
+struct StrategyParams {
+    price_precision: u32,
+    quantity_precision: u32,
+    trade_amount: Decimal,
+    max_position: Decimal,
+}
+
+#[derive(Clone, Debug, Default)]
+struct PendingLevels {
+    total_quantity: Decimal,
+    levels: HashMap<Decimal, Vec<LimitOrder>>,
+}
+
+impl PendingLevels {
+    fn from_orders(orders: Vec<LimitOrder>, precision: u32) -> Self {
+        let mut map: HashMap<Decimal, Vec<LimitOrder>> = HashMap::new();
+        let mut total = Decimal::ZERO;
+        for order in orders {
+            let remaining = order.quantity - order.executed_quantity;
+            if remaining <= Decimal::ZERO {
+                continue;
+            }
+            total += remaining;
+            let key = order.price.round_dp(precision);
+            map.entry(key).or_default().push(order);
+        }
+        PendingLevels {
+            total_quantity: total,
+            levels: map,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct MarketSnapshot {
+    avg_positive: f64,
+    avg_negative: f64,
+    current_price: f64,
+    buy_levels: PendingLevels,
+    sell_levels: PendingLevels,
+    position_quantity: Decimal,
+    position_equity: Decimal,
+}
+
+#[derive(Clone, Debug)]
+struct OrderPlan {
+    price: Decimal,
+    quantity: Decimal,
+}
+
+#[derive(Clone, Debug, Default)]
+struct StrategyPlan {
+    bids: Vec<OrderPlan>,
+    asks: Vec<OrderPlan>,
+}
+
+trait TradingStrategy {
+    fn plan(&self, snapshot: &MarketSnapshot, params: &StrategyParams) -> StrategyPlan;
+}
+
+struct GridStrategy {
+    grid_count: u32,
+    bid_amp_factor: f64,
+    ask_amp_factor: f64,
+    step_multiplier: f64,
+}
+
+impl GridStrategy {
+    fn new(grid_count: u32) -> Self {
+        GridStrategy {
+            grid_count,
+            bid_amp_factor: 0.75,
+            ask_amp_factor: 0.75,
+            step_multiplier: 0.25,
+        }
+    }
+}
+
+impl TradingStrategy for GridStrategy {
+    fn plan(&self, snapshot: &MarketSnapshot, params: &StrategyParams) -> StrategyPlan {
+        let mut bids = Vec::new();
+        let mut asks = Vec::new();
+
+        let buy_threshold = snapshot.avg_negative * self.bid_amp_factor;
+        let sell_threshold = snapshot.avg_positive * self.ask_amp_factor;
+
+        for i in 0..self.grid_count {
+            let bid_price = snapshot.current_price
+                * (1.0 - buy_threshold - i as f64 * self.step_multiplier * snapshot.avg_negative);
+            if let Some(price) = format_price(bid_price, params.price_precision) {
+                if let Some(quantity) = format_quantity(params.trade_amount / price, params.quantity_precision) {
+                    bids.push(OrderPlan { price, quantity });
+                }
+            }
+
+            let ask_price = snapshot.current_price
+                * (1.0 + sell_threshold + i as f64 * self.step_multiplier * snapshot.avg_positive);
+            if let Some(price) = format_price(ask_price, params.price_precision) {
+                if let Some(quantity) = format_quantity(params.trade_amount / price, params.quantity_precision) {
+                    asks.push(OrderPlan { price, quantity });
+                }
+            }
+        }
+
+        StrategyPlan { bids, asks }
+    }
+}
+
+struct RiskManager {
+    max_drawdown: Decimal,
+    initial_equity: Option<Decimal>,
+    max_equity: Decimal,
+}
+
+impl RiskManager {
+    fn new(max_drawdown: Decimal) -> Self {
+        RiskManager {
+            max_drawdown,
+            initial_equity: None,
+            max_equity: Decimal::ZERO,
+        }
+    }
+
+    fn evaluate(&mut self, equity: Decimal) -> RiskDecision {
+        if let Some(initial) = self.initial_equity {
+            if equity > self.max_equity {
+                self.max_equity = equity;
+            }
+
+            let threshold = initial * (Decimal::ONE - self.max_drawdown);
+            if equity < threshold {
+                return RiskDecision { flatten: true };
+            }
+        } else {
+            self.initial_equity = Some(equity);
+            self.max_equity = equity;
+        }
+
+        RiskDecision { flatten: false }
+    }
+
+    fn max_equity(&self) -> Decimal {
+        self.max_equity
+    }
+}
+
+struct RiskDecision {
+    flatten: bool,
+}
+
+struct OrderExecutor<'a> {
+    client: &'a BpxClient,
+    symbol: &'a str,
+    params: &'a StrategyParams,
+}
+
+impl<'a> OrderExecutor<'a> {
+    fn new(client: &'a BpxClient, symbol: &'a str, params: &'a StrategyParams) -> Self {
+        OrderExecutor { client, symbol, params }
+    }
+
+    async fn flatten_position(&self, quantity: Decimal) -> Result<()> {
+        if quantity == Decimal::ZERO {
+            return Ok(());
+        }
+
+        let side = if quantity.is_sign_positive() {
+            Side::Ask
+        } else {
+            Side::Bid
+        };
+        let order = ExecuteOrderPayload {
+            symbol: self.symbol.to_string(),
+            side,
+            order_type: OrderType::Market,
+            quantity: Some(quantity.abs()),
+            ..Default::default()
+        };
+
+        self.client
+            .execute_order(order)
+            .await
+            .with_context(|| "平仓失败".to_string())?;
+
+        Ok(())
+    }
+
+    async fn cancel_orders(&self, orders: Vec<LimitOrder>) {
+        for order in orders {
+            if let Err(err) = self
+                .client
+                .cancel_order(self.symbol, Some(order.id.as_str()), None)
+                .await
+            {
+                if !err.to_string().contains("Order not found") {
+                    eprintln!("取消订单失败: {:?}", err);
+                }
+            }
+        }
+    }
+
+    async fn reconcile(&self, snapshot: &MarketSnapshot, plan: &StrategyPlan) -> Result<(Decimal, Decimal)> {
+        let mut buy_levels: HashMap<Decimal, VecDeque<LimitOrder>> = snapshot
+            .buy_levels
+            .levels
+            .iter()
+            .map(|(price, orders)| (price.clone(), orders.clone().into()))
+            .collect();
+        let mut sell_levels: HashMap<Decimal, VecDeque<LimitOrder>> = snapshot
+            .sell_levels
+            .levels
+            .iter()
+            .map(|(price, orders)| (price.clone(), orders.clone().into()))
+            .collect();
+
+        let mut pending_long = snapshot.buy_levels.total_quantity;
+        let mut pending_short = snapshot.sell_levels.total_quantity;
+
+        for order_plan in &plan.bids {
+            let mut reuse = false;
+            if let Some(queue) = buy_levels.get_mut(&order_plan.price) {
+                if let Some(existing) = queue.pop_front() {
+                    println!("保留买单: {} @ {}", existing.id, order_plan.price);
+                    reuse = true;
+                }
+                if queue.is_empty() {
+                    buy_levels.remove(&order_plan.price);
+                }
+            }
+
+            if reuse {
+                continue;
+            }
+
+            let estimated_long = snapshot.position_quantity.max(Decimal::ZERO) + pending_long;
+            if estimated_long >= self.params.max_position {
+                println!("已达到最大多头持仓限制，不再下额外买单");
+                break;
+            }
+
+            let order = ExecuteOrderPayload {
+                symbol: self.symbol.to_string(),
+                side: Side::Bid,
+                order_type: OrderType::Limit,
+                quantity: Some(order_plan.quantity),
+                price: Some(order_plan.price),
+                ..Default::default()
+            };
+
+            match self.client.execute_order(order).await {
+                Ok(Order::Limit(limit_order)) => {
+                    println!(
+                        "买单已提交: ID={}, 价格={}, 数量={}",
+                        limit_order.id, order_plan.price, order_plan.quantity
+                    );
+                    pending_long += order_plan.quantity;
+                }
+                Ok(_) => {}
+                Err(e) => eprintln!("买单失败: {:?}", e),
+            }
+        }
+
+        for order_plan in &plan.asks {
+            let mut reuse = false;
+            if let Some(queue) = sell_levels.get_mut(&order_plan.price) {
+                if let Some(existing) = queue.pop_front() {
+                    println!("保留卖单: {} @ {}", existing.id, order_plan.price);
+                    reuse = true;
+                }
+                if queue.is_empty() {
+                    sell_levels.remove(&order_plan.price);
+                }
+            }
+
+            if reuse {
+                continue;
+            }
+
+            let estimated_short = snapshot.position_quantity.min(Decimal::ZERO).abs() + pending_short;
+            if estimated_short >= self.params.max_position {
+                println!("已达到最大空头持仓限制，不再下额外卖单");
+                break;
+            }
+
+            let order = ExecuteOrderPayload {
+                symbol: self.symbol.to_string(),
+                side: Side::Ask,
+                order_type: OrderType::Limit,
+                quantity: Some(order_plan.quantity),
+                price: Some(order_plan.price),
+                ..Default::default()
+            };
+
+            match self.client.execute_order(order).await {
+                Ok(Order::Limit(limit_order)) => {
+                    println!(
+                        "卖单已提交: ID={}, 价格={}, 数量={}",
+                        limit_order.id, order_plan.price, order_plan.quantity
+                    );
+                    pending_short += order_plan.quantity;
+                }
+                Ok(_) => {}
+                Err(e) => eprintln!("卖单失败: {:?}", e),
+            }
+        }
+
+        let remaining_buy = buy_levels.into_values().flatten().collect::<Vec<LimitOrder>>();
+        if !remaining_buy.is_empty() {
+            println!("取消过期买单: {} 条", remaining_buy.len());
+            self.cancel_orders(remaining_buy).await;
+        }
+
+        let remaining_sell = sell_levels.into_values().flatten().collect::<Vec<LimitOrder>>();
+        if !remaining_sell.is_empty() {
+            println!("取消过期卖单: {} 条", remaining_sell.len());
+            self.cancel_orders(remaining_sell).await;
+        }
+
+        Ok((pending_long, pending_short))
+    }
+}
+
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<()> {
     let base_url = env::var("BASE_URL").unwrap_or_else(|_| BACKPACK_API_BASE_URL.to_string());
     let secret = env::var("SECRET").expect("Missing SECRET environment variable");
 
@@ -64,24 +399,22 @@ async fn main() {
     // 交易参数设置
     let symbol = "FARTCOIN_USDC_PERP"; // 期货合约交易对
     let _leverage = 5; // 杠杆倍数（暂时未使用）
-    let grid_count = 3; // 网格数量
+    let grid_count: u32 = 3; // 网格数量
     let trade_amount = dec!(100); // 每个网格的交易金额（USDC）
     let max_position = dec!(300); // 最大持仓量
     let max_drawdown = dec!(0.02); // 最大回撤 2%
-    let mut active_orders: Vec<String> = Vec::new(); // 存储活跃订单
-    let mut last_price: Option<f64> = None;
     let price_precision = 2; // 价格精度（小数位数）
     let quantity_precision = 1; // 数量精度（小数位数）
 
-    // 持仓管理
-    let mut long_position = Decimal::ZERO;
-    let mut short_position = Decimal::ZERO;
-    let mut buy_entry_prices: HashMap<String, Decimal> = HashMap::new();
-    let mut sell_entry_prices: HashMap<String, Decimal> = HashMap::new();
-    let mut buy_tp_orders: HashMap<String, Decimal> = HashMap::new();
-    let mut sell_tp_orders: HashMap<String, Decimal> = HashMap::new();
-    let mut max_equity = Decimal::ZERO;
-    let mut initial_equity = None;
+    let params = StrategyParams {
+        price_precision,
+        quantity_precision,
+        trade_amount,
+        max_position,
+    };
+    let strategy = GridStrategy::new(grid_count);
+    let mut risk_manager = RiskManager::new(max_drawdown);
+    let mut last_price: Option<f64> = None;
 
     loop {
         let current_time = Local::now();
@@ -118,15 +451,14 @@ async fn main() {
                 println!("有效收盘价数量: {}", closes.len());
                 if closes.len() < 30 {
                     println!("数据不足，等待更多数据, 当前数据: {}", closes.len());
-                    thread::sleep(Duration::from_secs(5));
+                    sleep(Duration::from_secs(5)).await;
                     continue;
                 }
 
                 // 计算振幅
                 let (avg_positive, avg_negative) = calculate_amplitude(&closes);
-                let current_price = closes.last().unwrap();
+                let current_price = *closes.last().unwrap();
 
-                // 打印价格变化
                 if let Some(last) = last_price {
                     let price_change = ((current_price - last) / last) * 100.0;
                     println!(
@@ -134,214 +466,84 @@ async fn main() {
                         price_change, last, current_price
                     );
                 }
-                last_price = Some(*current_price);
+                last_price = Some(current_price);
 
-                // 更新最大权益
-                let current_equity = long_position - short_position;
-                if current_equity > max_equity {
-                    max_equity = current_equity;
-                }
-
-                // 检查最大回撤
-                if let Some(init_equity) = initial_equity {
-                    if current_equity < init_equity * (Decimal::ONE - max_drawdown) {
-                        println!("触发最大回撤保护，执行清仓");
-                        // 清仓逻辑
-                        if long_position > Decimal::ZERO {
-                            let order = ExecuteOrderPayload {
-                                symbol: symbol.to_string(),
-                                side: Side::Ask,
-                                order_type: OrderType::Market,
-                                quantity: Some(long_position),
-                                ..Default::default()
-                            };
-                            if let Err(e) = client.execute_order(order).await {
-                                eprintln!("清仓失败: {:?}", e);
-                            }
-                        }
-                        if short_position > Decimal::ZERO {
-                            let order = ExecuteOrderPayload {
-                                symbol: symbol.to_string(),
-                                side: Side::Bid,
-                                order_type: OrderType::Market,
-                                quantity: Some(short_position),
-                                ..Default::default()
-                            };
-                            if let Err(e) = client.execute_order(order).await {
-                                eprintln!("清仓失败: {:?}", e);
-                            }
-                        }
-                        return;
+                let open_orders = match client.get_open_orders(Some(symbol)).await {
+                    Ok(orders) => orders,
+                    Err(e) => {
+                        eprintln!("获取未完成订单失败: {:?}", e);
+                        sleep(Duration::from_secs(5)).await;
+                        continue;
                     }
-                } else {
-                    initial_equity = Some(current_equity);
-                }
+                };
 
-                // 检查并更新止盈订单
-                for (order_id, entry_price) in buy_entry_prices.clone() {
-                    if !active_orders.contains(&order_id) {
-                        // 订单已成交，更新持仓
-                        let quantity = trade_amount / entry_price;
-                        long_position += quantity;
-
-                        // 设置止盈
-                        let tp_price = entry_price * (Decimal::ONE + dec!(0.01)); // 1% 止盈
-                        let tp_order = ExecuteOrderPayload {
-                            symbol: symbol.to_string(),
-                            side: Side::Ask,
-                            order_type: OrderType::Limit,
-                            quantity: Some(quantity),
-                            price: Some(tp_price),
-                            ..Default::default()
-                        };
-                        if let Ok(order) = client.execute_order(tp_order).await {
-                            if let Order::Limit(limit_order) = order {
-                                let order_id = limit_order.id.clone();
-                                buy_tp_orders.insert(order_id.clone(), tp_price);
-                                active_orders.push(order_id);
-                            }
+                let mut buy_orders_raw = Vec::new();
+                let mut sell_orders_raw = Vec::new();
+                for order in open_orders {
+                    if let Order::Limit(limit_order) = order {
+                        match limit_order.side {
+                            Side::Bid => buy_orders_raw.push(limit_order),
+                            Side::Ask => sell_orders_raw.push(limit_order),
                         }
                     }
                 }
 
-                for (order_id, entry_price) in sell_entry_prices.clone() {
-                    if !active_orders.contains(&order_id) {
-                        // 订单已成交，更新持仓
-                        let quantity = trade_amount / entry_price;
-                        short_position += quantity;
+                let buy_levels = PendingLevels::from_orders(buy_orders_raw.clone(), params.price_precision);
+                let sell_levels = PendingLevels::from_orders(sell_orders_raw.clone(), params.price_precision);
 
-                        // 设置止盈
-                        let tp_price = entry_price * (Decimal::ONE - dec!(0.01)); // 1% 止盈
-                        let tp_order = ExecuteOrderPayload {
-                            symbol: symbol.to_string(),
-                            side: Side::Bid,
-                            order_type: OrderType::Limit,
-                            quantity: Some(quantity),
-                            price: Some(tp_price),
-                            ..Default::default()
-                        };
-                        if let Ok(order) = client.execute_order(tp_order).await {
-                            if let Order::Limit(limit_order) = order {
-                                let order_id = limit_order.id.clone();
-                                sell_tp_orders.insert(order_id.clone(), tp_price);
-                                active_orders.push(order_id);
-                            }
-                        }
+                let (position_quantity, position_equity) = match client.get_open_future_positions().await {
+                    Ok(positions) => positions
+                        .into_iter()
+                        .find(|pos| pos.symbol == symbol)
+                        .map(|pos| {
+                            let qty = parse_decimal_str(&pos.net_quantity).unwrap_or(Decimal::ZERO);
+                            let realized = parse_decimal_str(&pos.pnl_realized).unwrap_or(Decimal::ZERO);
+                            let unrealized = parse_decimal_str(&pos.pnl_unrealized).unwrap_or(Decimal::ZERO);
+                            (qty, realized + unrealized)
+                        })
+                        .unwrap_or((Decimal::ZERO, Decimal::ZERO)),
+                    Err(e) => {
+                        eprintln!("获取持仓信息失败: {:?}", e);
+                        (Decimal::ZERO, Decimal::ZERO)
                     }
+                };
+
+                let snapshot = MarketSnapshot {
+                    avg_positive,
+                    avg_negative,
+                    current_price,
+                    buy_levels,
+                    sell_levels,
+                    position_quantity,
+                    position_equity,
+                };
+
+                let risk_decision = risk_manager.evaluate(snapshot.position_equity);
+                if risk_decision.flatten {
+                    println!("触发最大回撤保护，执行清仓");
+                    let executor = OrderExecutor::new(&client, symbol, &params);
+                    if !buy_orders_raw.is_empty() {
+                        executor.cancel_orders(buy_orders_raw).await;
+                    }
+                    if !sell_orders_raw.is_empty() {
+                        executor.cancel_orders(sell_orders_raw).await;
+                    }
+                    executor.flatten_position(snapshot.position_quantity).await?;
+                    break;
                 }
 
-                // 检查止盈订单成交情况
-                for (order_id, _) in buy_tp_orders.clone() {
-                    if !active_orders.contains(&order_id) {
-                        // 止盈订单已成交，减少持仓
-                        if let Some(quantity) = buy_entry_prices.get(&order_id).map(|price| trade_amount / price) {
-                            long_position -= quantity;
-                        }
-                    }
-                }
+                let plan = strategy.plan(&snapshot, &params);
+                let executor = OrderExecutor::new(&client, symbol, &params);
+                let (pending_long, pending_short) = executor.reconcile(&snapshot, &plan).await?;
 
-                for (order_id, _) in sell_tp_orders.clone() {
-                    if !active_orders.contains(&order_id) {
-                        // 止盈订单已成交，减少持仓
-                        if let Some(quantity) = sell_entry_prices.get(&order_id).map(|price| trade_amount / price) {
-                            short_position -= quantity;
-                        }
-                    }
-                }
-
-                // 取消所有现有订单
-                for order_id in &active_orders {
-                    println!("取消订单: {}", order_id);
-                    match client.cancel_order(symbol, Some(order_id.as_str()), None).await {
-                        Ok(_) => println!("订单取消成功: {}", order_id),
-                        Err(e) => {
-                            if e.to_string().contains("Order not found") {
-                                println!("订单已不存在: {}", order_id);
-                            } else {
-                                eprintln!("取消订单失败: {:?}", e);
-                            }
-                        }
-                    }
-                }
-                active_orders.clear();
-
-                // 计算网格价格
-                let buy_threshold = avg_negative * 0.75;
-                let sell_threshold = avg_positive * 0.75;
-
-                // 买单网格
-                if long_position < max_position {
-                    for i in 0..grid_count {
-                        let price = current_price * (1.0 - buy_threshold - i as f64 * 0.25 * avg_negative);
-                        let formatted_price = format_price(price, price_precision);
-                        let quantity = format_quantity(trade_amount / formatted_price, quantity_precision);
-
-                        let order = ExecuteOrderPayload {
-                            symbol: symbol.to_string(),
-                            side: Side::Bid,
-                            order_type: OrderType::Limit,
-                            quantity: Some(quantity),
-                            price: Some(formatted_price),
-                            ..Default::default()
-                        };
-
-                        match client.execute_order(order).await {
-                            Ok(order) => {
-                                if let Order::Limit(limit_order) = order {
-                                    println!(
-                                        "买单已提交: ID={}, 价格={}, 数量={}",
-                                        limit_order.id, formatted_price, quantity
-                                    );
-                                    active_orders.push(limit_order.id.clone());
-                                    buy_entry_prices.insert(limit_order.id, formatted_price);
-                                }
-                            }
-                            Err(e) => eprintln!("买单失败: {:?}", e),
-                        }
-                    }
-                }
-
-                // 卖单网格
-                if short_position < max_position {
-                    for i in 0..grid_count {
-                        let price = current_price * (1.0 + sell_threshold + i as f64 * 0.25 * avg_positive);
-                        let formatted_price = format_price(price, price_precision);
-                        let quantity = format_quantity(trade_amount / formatted_price, quantity_precision);
-
-                        let order = ExecuteOrderPayload {
-                            symbol: symbol.to_string(),
-                            side: Side::Ask,
-                            order_type: OrderType::Limit,
-                            quantity: Some(quantity),
-                            price: Some(formatted_price),
-                            ..Default::default()
-                        };
-
-                        match client.execute_order(order).await {
-                            Ok(order) => {
-                                if let Order::Limit(limit_order) = order {
-                                    println!(
-                                        "卖单已提交: ID={}, 价格={}, 数量={}",
-                                        limit_order.id, formatted_price, quantity
-                                    );
-                                    active_orders.push(limit_order.id.clone());
-                                    sell_entry_prices.insert(limit_order.id, formatted_price);
-                                }
-                            }
-                            Err(e) => eprintln!("卖单失败: {:?}", e),
-                        }
-                    }
-                }
-
-                // 打印当前状态
                 println!("\n=== 当前状态 ===");
-                println!("多头持仓: {}", long_position);
-                println!("空头持仓: {}", short_position);
-                println!("最大权益: {}", max_equity);
-                println!("当前权益: {}", current_equity);
-                println!("活跃订单数量: {}", active_orders.len());
-                println!("平均正向振幅: {:.4}%", avg_positive * 100.0);
-                println!("平均负向振幅: {:.4}%", avg_negative * 100.0);
+                println!("净持仓: {}", snapshot.position_quantity);
+                println!("在途买单合计数量: {}", pending_long);
+                println!("在途卖单合计数量: {}", pending_short);
+                println!("最大权益: {}", risk_manager.max_equity());
+                println!("当前权益: {}", snapshot.position_equity);
+                println!("平均正向振幅: {:.4}%", snapshot.avg_positive * 100.0);
+                println!("平均负向振幅: {:.4}%", snapshot.avg_negative * 100.0);
             }
             Err(e) => {
                 eprintln!("获取K线数据失败: {:?}", e);
@@ -354,6 +556,7 @@ async fn main() {
 
         // 等待一段时间再进行下一次检查
         println!("\n等待5秒后进行下一次检查...");
-        let _ = tokio::time::sleep(Duration::from_secs(5));
+        sleep(Duration::from_secs(5)).await;
     }
+    Ok(())
 }
