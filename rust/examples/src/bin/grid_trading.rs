@@ -1,6 +1,8 @@
 use anyhow::{Context, Result};
+use async_trait::async_trait;
 use bpx_api_client::{BpxClient, BACKPACK_API_BASE_URL};
-use bpx_api_types::markets::KlineInterval;
+use bpx_api_types::futures::FuturePosition;
+use bpx_api_types::markets::{Kline, KlineInterval};
 use bpx_api_types::order::{ExecuteOrderPayload, LimitOrder, Order, OrderType, Side};
 use chrono::Local;
 use rust_decimal::prelude::*;
@@ -9,6 +11,7 @@ use rust_decimal_macros::dec;
 use std::collections::{HashMap, VecDeque};
 use std::env;
 use std::str::FromStr;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
 
@@ -281,14 +284,18 @@ struct RiskDecision {
 }
 
 struct OrderExecutor<'a> {
-    client: &'a BpxClient,
+    exchange: Arc<dyn ExchangeClient>,
     symbol: &'a str,
     params: &'a StrategyParams,
 }
 
 impl<'a> OrderExecutor<'a> {
-    fn new(client: &'a BpxClient, symbol: &'a str, params: &'a StrategyParams) -> Self {
-        OrderExecutor { client, symbol, params }
+    fn new(exchange: Arc<dyn ExchangeClient>, symbol: &'a str, params: &'a StrategyParams) -> Self {
+        OrderExecutor {
+            exchange,
+            symbol,
+            params,
+        }
     }
 
     async fn flatten_position(&self, quantity: Decimal) -> Result<()> {
@@ -309,8 +316,8 @@ impl<'a> OrderExecutor<'a> {
             ..Default::default()
         };
 
-        self.client
-            .execute_order(order)
+        self.exchange
+            .submit_order(order)
             .await
             .with_context(|| "平仓失败".to_string())?;
 
@@ -319,11 +326,7 @@ impl<'a> OrderExecutor<'a> {
 
     async fn cancel_orders(&self, orders: Vec<LimitOrder>) {
         for order in orders {
-            if let Err(err) = self
-                .client
-                .cancel_order(self.symbol, Some(order.id.as_str()), None)
-                .await
-            {
+            if let Err(err) = self.exchange.cancel_order(self.symbol, order.id.as_str()).await {
                 if !err.to_string().contains("Order not found") {
                     eprintln!("取消订单失败: {:?}", err);
                 }
@@ -379,7 +382,7 @@ impl<'a> OrderExecutor<'a> {
                 ..Default::default()
             };
 
-            match self.client.execute_order(order).await {
+            match self.exchange.submit_order(order).await {
                 Ok(Order::Limit(limit_order)) => {
                     println!(
                         "买单已提交: ID={}, 价格={}, 数量={}",
@@ -423,7 +426,7 @@ impl<'a> OrderExecutor<'a> {
                 ..Default::default()
             };
 
-            match self.client.execute_order(order).await {
+            match self.exchange.submit_order(order).await {
                 Ok(Order::Limit(limit_order)) => {
                     println!(
                         "卖单已提交: ID={}, 价格={}, 数量={}",
@@ -461,6 +464,7 @@ async fn main() -> Result<()> {
     println!("时间: {}", Local::now().format("%Y-%m-%d %H:%M:%S"));
 
     let client = BpxClient::init(base_url, &secret, None).expect("Failed to initialize Backpack API client");
+    let exchange: Arc<dyn ExchangeClient> = Arc::new(BpxExchange::new(client));
 
     // 交易参数设置
     let symbol = "FARTCOIN_USDC_PERP"; // 期货合约交易对
@@ -501,8 +505,8 @@ async fn main() -> Result<()> {
             .unwrap()
             .timestamp();
 
-        match client
-            .get_k_lines(symbol, KlineInterval::OneMinute, Some(start_time), None)
+        match exchange
+            .fetch_k_lines(symbol, KlineInterval::OneMinute, Some(start_time), None)
             .await
         {
             Ok(klines) => {
@@ -543,7 +547,7 @@ async fn main() -> Result<()> {
                 }
                 last_price = Some(current_price);
 
-                let open_orders = match client.get_open_orders(Some(symbol)).await {
+                let open_orders = match exchange.fetch_open_orders(symbol).await {
                     Ok(orders) => orders,
                     Err(e) => {
                         eprintln!("获取未完成订单失败: {:?}", e);
@@ -566,7 +570,7 @@ async fn main() -> Result<()> {
                 let buy_levels = PendingLevels::from_orders(buy_orders_raw.clone(), params.price_precision);
                 let sell_levels = PendingLevels::from_orders(sell_orders_raw.clone(), params.price_precision);
 
-                let (position_quantity, position_equity, entry_price) = match client.get_open_future_positions().await {
+                let (position_quantity, position_equity, entry_price) = match exchange.fetch_positions().await {
                     Ok(positions) => positions
                         .into_iter()
                         .find(|pos| pos.symbol == symbol)
@@ -598,7 +602,7 @@ async fn main() -> Result<()> {
                 let risk_decision = risk_manager.evaluate(snapshot.position_equity);
                 if risk_decision.flatten {
                     println!("触发最大回撤保护，执行清仓");
-                    let executor = OrderExecutor::new(&client, symbol, &params);
+                    let executor = OrderExecutor::new(exchange.clone(), symbol, &params);
                     if !buy_orders_raw.is_empty() {
                         executor.cancel_orders(buy_orders_raw).await;
                     }
@@ -613,7 +617,7 @@ async fn main() -> Result<()> {
                 }
 
                 let plan = strategy.plan(&snapshot, &params);
-                let executor = OrderExecutor::new(&client, symbol, &params);
+                let executor = OrderExecutor::new(exchange.clone(), symbol, &params);
                 let (pending_long, pending_short) = executor.reconcile(&snapshot, &plan).await?;
 
                 println!("\n=== 当前状态 ===");
@@ -639,4 +643,68 @@ async fn main() -> Result<()> {
         sleep(Duration::from_secs(5)).await;
     }
     Ok(())
+}
+#[async_trait]
+trait ExchangeClient: Send + Sync {
+    async fn fetch_k_lines(
+        &self,
+        symbol: &str,
+        interval: KlineInterval,
+        start: Option<i64>,
+        end: Option<i64>,
+    ) -> Result<Vec<Kline>>;
+
+    async fn fetch_open_orders(&self, symbol: &str) -> Result<Vec<Order>>;
+
+    async fn fetch_positions(&self) -> Result<Vec<FuturePosition>>;
+
+    async fn submit_order(&self, payload: ExecuteOrderPayload) -> Result<Order>;
+
+    async fn cancel_order(&self, symbol: &str, order_id: &str) -> Result<()>;
+}
+
+struct BpxExchange {
+    client: BpxClient,
+}
+
+impl BpxExchange {
+    fn new(client: BpxClient) -> Self {
+        Self { client }
+    }
+}
+
+#[async_trait]
+impl ExchangeClient for BpxExchange {
+    async fn fetch_k_lines(
+        &self,
+        symbol: &str,
+        interval: KlineInterval,
+        start: Option<i64>,
+        end: Option<i64>,
+    ) -> Result<Vec<Kline>> {
+        self.client
+            .get_k_lines(symbol, interval, start, end)
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn fetch_open_orders(&self, symbol: &str) -> Result<Vec<Order>> {
+        self.client.get_open_orders(Some(symbol)).await.map_err(Into::into)
+    }
+
+    async fn fetch_positions(&self) -> Result<Vec<FuturePosition>> {
+        self.client.get_open_future_positions().await.map_err(Into::into)
+    }
+
+    async fn submit_order(&self, payload: ExecuteOrderPayload) -> Result<Order> {
+        self.client.execute_order(payload).await.map_err(Into::into)
+    }
+
+    async fn cancel_order(&self, symbol: &str, order_id: &str) -> Result<()> {
+        self.client
+            .cancel_order(symbol, Some(order_id), None)
+            .await
+            .map(|_| ())
+            .map_err(Into::into)
+    }
 }
