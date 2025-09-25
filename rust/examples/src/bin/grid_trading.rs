@@ -69,6 +69,9 @@ struct StrategyParams {
     quantity_precision: u32,
     trade_amount: Decimal,
     max_position: Decimal,
+    min_price_increment: Decimal,
+    round_fee_rate: Decimal,
+    profit_buffer: Decimal,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -106,6 +109,7 @@ struct MarketSnapshot {
     sell_levels: PendingLevels,
     position_quantity: Decimal,
     position_equity: Decimal,
+    entry_price: Option<Decimal>,
 }
 
 #[derive(Clone, Debug)]
@@ -150,12 +154,42 @@ impl TradingStrategy for GridStrategy {
         let buy_threshold = snapshot.avg_negative * self.bid_amp_factor;
         let sell_threshold = snapshot.avg_positive * self.ask_amp_factor;
 
+        let min_gap = params.min_price_increment;
+        let entry_price = snapshot.entry_price.unwrap_or(Decimal::ZERO);
+        let margin = params.round_fee_rate + params.profit_buffer;
+        let min_sell_price = if snapshot.position_quantity > Decimal::ZERO && entry_price > Decimal::ZERO {
+            Some(entry_price * (Decimal::ONE + margin))
+        } else {
+            None
+        };
+
+        let max_cover_price = if snapshot.position_quantity < Decimal::ZERO && entry_price > Decimal::ZERO {
+            let factor = (Decimal::ONE - margin).max(Decimal::ZERO);
+            Some(entry_price * factor)
+        } else {
+            None
+        };
+
+        let mut last_bid_price: Option<Decimal> = None;
+        let mut last_ask_price: Option<Decimal> = None;
+
         for i in 0..self.grid_count {
             let bid_price = snapshot.current_price
                 * (1.0 - buy_threshold - i as f64 * self.step_multiplier * snapshot.avg_negative);
             if let Some(price) = format_price(bid_price, params.price_precision) {
                 if let Some(quantity) = format_quantity(params.trade_amount / price, params.quantity_precision) {
+                    if let Some(limit) = max_cover_price {
+                        if price > limit {
+                            continue;
+                        }
+                    }
+                    if let Some(prev) = last_bid_price {
+                        if (prev - price).abs() < min_gap {
+                            continue;
+                        }
+                    }
                     bids.push(OrderPlan { price, quantity });
+                    last_bid_price = Some(price);
                 }
             }
 
@@ -163,8 +197,25 @@ impl TradingStrategy for GridStrategy {
                 * (1.0 + sell_threshold + i as f64 * self.step_multiplier * snapshot.avg_positive);
             if let Some(price) = format_price(ask_price, params.price_precision) {
                 if let Some(quantity) = format_quantity(params.trade_amount / price, params.quantity_precision) {
+                    if let Some(limit) = min_sell_price {
+                        if price < limit {
+                            continue;
+                        }
+                    }
+                    if let Some(prev) = last_ask_price {
+                        if (price - prev).abs() < min_gap {
+                            continue;
+                        }
+                    }
                     asks.push(OrderPlan { price, quantity });
+                    last_ask_price = Some(price);
                 }
+            }
+        }
+
+        if let (Some(best_bid), Some(best_ask)) = (bids.first(), asks.first()) {
+            if best_ask.price - best_bid.price < min_gap {
+                asks.retain(|o| o.price - best_bid.price >= min_gap);
             }
         }
 
@@ -174,39 +225,54 @@ impl TradingStrategy for GridStrategy {
 
 struct RiskManager {
     max_drawdown: Decimal,
+    min_reference: Decimal,
     initial_equity: Option<Decimal>,
     max_equity: Decimal,
 }
 
 impl RiskManager {
-    fn new(max_drawdown: Decimal) -> Self {
+    fn new(max_drawdown: Decimal, min_reference: Decimal) -> Self {
         RiskManager {
             max_drawdown,
+            min_reference,
             initial_equity: None,
             max_equity: Decimal::ZERO,
         }
     }
 
     fn evaluate(&mut self, equity: Decimal) -> RiskDecision {
+        if self.initial_equity.is_none() {
+            if equity >= self.min_reference {
+                self.initial_equity = Some(equity);
+                self.max_equity = equity;
+            }
+            return RiskDecision { flatten: false };
+        }
+
         if let Some(initial) = self.initial_equity {
             if equity > self.max_equity {
                 self.max_equity = equity;
             }
 
-            let threshold = initial * (Decimal::ONE - self.max_drawdown);
-            if equity < threshold {
-                return RiskDecision { flatten: true };
+            let reference = self.max_equity.max(initial);
+            if reference > self.min_reference {
+                let threshold = reference * (Decimal::ONE - self.max_drawdown);
+                if equity < threshold {
+                    return RiskDecision { flatten: true };
+                }
             }
-        } else {
-            self.initial_equity = Some(equity);
-            self.max_equity = equity;
         }
 
         RiskDecision { flatten: false }
     }
 
     fn max_equity(&self) -> Decimal {
-        self.max_equity
+        self.max_equity.max(self.initial_equity.unwrap_or(Decimal::ZERO))
+    }
+
+    fn reset(&mut self) {
+        self.initial_equity = None;
+        self.max_equity = Decimal::ZERO;
     }
 }
 
@@ -406,14 +472,23 @@ async fn main() -> Result<()> {
     let price_precision = 2; // 价格精度（小数位数）
     let quantity_precision = 1; // 数量精度（小数位数）
 
+    let tick_size = Decimal::from_i128_with_scale(1, price_precision);
+    let min_price_increment = tick_size * Decimal::from(2); // 至少保持两个最小价位差
+    let round_fee_rate = dec!(0.001); // 预估建平仓合计手续费率（0.1%）
+    let profit_buffer = dec!(0.0005); // 额外利润缓冲（0.05%）
+
     let params = StrategyParams {
         price_precision,
         quantity_precision,
         trade_amount,
         max_position,
+        min_price_increment,
+        round_fee_rate,
+        profit_buffer,
     };
     let strategy = GridStrategy::new(grid_count);
-    let mut risk_manager = RiskManager::new(max_drawdown);
+    let min_reference = dec!(1); // 当权益达到 1 USDC 以上才启动回撤保护
+    let mut risk_manager = RiskManager::new(max_drawdown, min_reference);
     let mut last_price: Option<f64> = None;
 
     loop {
@@ -491,7 +566,7 @@ async fn main() -> Result<()> {
                 let buy_levels = PendingLevels::from_orders(buy_orders_raw.clone(), params.price_precision);
                 let sell_levels = PendingLevels::from_orders(sell_orders_raw.clone(), params.price_precision);
 
-                let (position_quantity, position_equity) = match client.get_open_future_positions().await {
+                let (position_quantity, position_equity, entry_price) = match client.get_open_future_positions().await {
                     Ok(positions) => positions
                         .into_iter()
                         .find(|pos| pos.symbol == symbol)
@@ -499,12 +574,13 @@ async fn main() -> Result<()> {
                             let qty = parse_decimal_str(&pos.net_quantity).unwrap_or(Decimal::ZERO);
                             let realized = parse_decimal_str(&pos.pnl_realized).unwrap_or(Decimal::ZERO);
                             let unrealized = parse_decimal_str(&pos.pnl_unrealized).unwrap_or(Decimal::ZERO);
-                            (qty, realized + unrealized)
+                            let entry = parse_decimal_str(&pos.entry_price).filter(|p| *p > Decimal::ZERO);
+                            (qty, realized + unrealized, entry)
                         })
-                        .unwrap_or((Decimal::ZERO, Decimal::ZERO)),
+                        .unwrap_or((Decimal::ZERO, Decimal::ZERO, None)),
                     Err(e) => {
                         eprintln!("获取持仓信息失败: {:?}", e);
-                        (Decimal::ZERO, Decimal::ZERO)
+                        (Decimal::ZERO, Decimal::ZERO, None)
                     }
                 };
 
@@ -516,6 +592,7 @@ async fn main() -> Result<()> {
                     sell_levels,
                     position_quantity,
                     position_equity,
+                    entry_price,
                 };
 
                 let risk_decision = risk_manager.evaluate(snapshot.position_equity);
@@ -529,7 +606,10 @@ async fn main() -> Result<()> {
                         executor.cancel_orders(sell_orders_raw).await;
                     }
                     executor.flatten_position(snapshot.position_quantity).await?;
-                    break;
+                    risk_manager.reset();
+                    println!("已执行清仓，进入冷却...");
+                    sleep(Duration::from_secs(5)).await;
+                    continue;
                 }
 
                 let plan = strategy.plan(&snapshot, &params);
