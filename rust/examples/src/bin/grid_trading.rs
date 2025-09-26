@@ -2,13 +2,10 @@ use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use bpx_api_client::{BpxClient, BACKPACK_API_BASE_URL};
 use bpx_api_types::markets::{Kline, KlineInterval};
-use bpx_api_types::order::{
-    ExecuteOrderPayload, LimitOrder, MarketOrder, Order, OrderStatus, OrderType, SelfTradePrevention, Side, TimeInForce,
-};
+use bpx_api_types::order::{ExecuteOrderPayload, LimitOrder, Order, OrderType, Side};
 use chrono::Local;
 use good_lp::solvers::microlp::microlp;
 use good_lp::{constraint, variable, variables, Solution, SolverModel};
-use nalgebra::DVector;
 use rust_decimal::prelude::*;
 use rust_decimal::RoundingStrategy;
 use rust_decimal_macros::dec;
@@ -87,60 +84,104 @@ fn u32_from_env(key: &str, default: u32) -> u32 {
         .unwrap_or(default)
 }
 
-#[cfg(feature = "hyperliquid")]
 fn f64_from_env(key: &str, default: f64) -> f64 {
     env::var(key)
         .ok()
         .and_then(|raw| raw.parse::<f64>().ok())
         .unwrap_or(default)
 }
-
-fn optimize_quantities(base_quantities: &[Decimal], weights: &[f64], capacity: Decimal) -> Vec<Decimal> {
+fn optimize_quantities(
+    base_quantities: &[Decimal],
+    weights: &[f64],
+    capacity: Decimal,
+    deviation_penalty: f64,
+) -> Vec<Decimal> {
     if base_quantities.is_empty() || weights.is_empty() || capacity <= Decimal::ZERO {
         return vec![Decimal::ZERO; base_quantities.len()];
     }
 
     let len = base_quantities.len().min(weights.len());
+    if len == 0 {
+        return Vec::new();
+    }
+
     let cap_f = capacity.to_f64().unwrap_or(0.0).max(0.0);
     if cap_f <= f64::EPSILON {
         return vec![Decimal::ZERO; len];
     }
 
-    let weights_vec = DVector::from_iterator(len, weights.iter().cloned());
-    if weights_vec.iter().all(|w| *w <= 0.0) {
-        return vec![Decimal::ZERO; len];
-    }
-
     let mut vars = variables!();
-    let mut decision_vars = Vec::with_capacity(len);
+    let mut qty_vars = Vec::with_capacity(len);
+    let mut dev_plus = Vec::with_capacity(len);
+    let mut dev_minus = Vec::with_capacity(len);
+
     for &max_qty in base_quantities.iter().take(len) {
         let upper = max_qty.to_f64().unwrap_or(0.0).max(0.0);
-        let var = vars.add(variable().min(0.0).max(upper));
-        decision_vars.push(var);
+        let x = vars.add(variable().min(0.0).max(upper));
+        let d_plus = vars.add(variable().min(0.0));
+        let d_minus = vars.add(variable().min(0.0));
+        qty_vars.push(x);
+        dev_plus.push(d_plus);
+        dev_minus.push(d_minus);
     }
 
-    let mut objective = 0.0 * decision_vars[0];
-    for (coeff, var) in weights_vec.iter().zip(decision_vars.iter()) {
-        objective = objective + (*coeff) * (*var);
+    // 目标：最大化收益 - λ * 偏差
+    let mut objective = 0.0 * qty_vars[0];
+    for i in 0..len {
+        objective = objective + weights[i] * qty_vars[i];
+        if deviation_penalty > 0.0 {
+            objective = objective - deviation_penalty * dev_plus[i];
+            objective = objective - deviation_penalty * dev_minus[i];
+        }
     }
 
-    let mut sum_expr = 0.0 * decision_vars[0];
-    for var in &decision_vars {
+    let mut model = vars.maximise(objective).using(microlp);
+
+    // 总量约束：Σ x_i <= capacity
+    let mut sum_expr = 0.0 * qty_vars[0];
+    for var in &qty_vars {
         sum_expr = sum_expr + 1.0 * (*var);
     }
+    model = model.with(constraint!(sum_expr <= cap_f));
 
-    let solution = vars
-        .maximise(objective)
-        .using(microlp)
-        .with(constraint!(sum_expr <= cap_f))
-        .solve();
+    // 偏差约束：x_i - base_i <= δ⁺，base_i - x_i <= δ⁻
+    for ((&base, x), (dp, dn)) in base_quantities
+        .iter()
+        .zip(qty_vars.iter())
+        .zip(dev_plus.iter().zip(dev_minus.iter()))
+    {
+        let base_f = base.to_f64().unwrap_or(0.0);
+        model = model
+            .with(constraint!(*x - base_f <= *dp))
+            .with(constraint!(base_f - *x <= *dn));
+    }
 
-    match solution {
-        Ok(sol) => decision_vars
+    match model.solve() {
+        Ok(sol) => qty_vars
             .iter()
             .map(|var| Decimal::from_f64(sol.value(*var)).unwrap_or(Decimal::ZERO))
             .collect(),
         Err(_) => base_quantities.iter().take(len).cloned().collect(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lp_penalty_spreads_orders() {
+        let base = vec![dec!(1), dec!(1), dec!(1)];
+        let weights = vec![0.6, 0.4, 0.2];
+        let cap = dec!(2);
+        let result = optimize_quantities(&base, &weights, cap, 0.5);
+        assert_eq!(result.len(), 3);
+        let positive = result.iter().filter(|q| **q > Decimal::ZERO).count();
+        assert!(
+            positive >= 2,
+            "expected bids distributed across multiple levels: {:?}",
+            result
+        );
     }
 }
 
@@ -153,6 +194,7 @@ struct StrategyParams {
     min_price_increment: Decimal,
     round_fee_rate: Decimal,
     profit_buffer: Decimal,
+    lp_deviation_penalty: f64,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -463,7 +505,12 @@ impl<'a> OrderExecutor<'a> {
             })
             .collect();
         let bid_base: Vec<Decimal> = plan.bids.iter().map(|o| o.quantity).collect();
-        let optimized_bids = optimize_quantities(&bid_base, &bid_weights, available_long);
+        let optimized_bids = optimize_quantities(
+            &bid_base,
+            &bid_weights,
+            available_long,
+            self.params.lp_deviation_penalty,
+        );
 
         let ask_weights: Vec<f64> = plan
             .asks
@@ -478,7 +525,12 @@ impl<'a> OrderExecutor<'a> {
             })
             .collect();
         let ask_base: Vec<Decimal> = plan.asks.iter().map(|o| o.quantity).collect();
-        let optimized_asks = optimize_quantities(&ask_base, &ask_weights, available_short);
+        let optimized_asks = optimize_quantities(
+            &ask_base,
+            &ask_weights,
+            available_short,
+            self.params.lp_deviation_penalty,
+        );
 
         let tolerance = Decimal::from_f64(0.0001).unwrap_or(Decimal::ZERO);
 
@@ -624,6 +676,7 @@ async fn main() -> Result<()> {
     let round_fee_rate = decimal_from_env("ROUND_FEE_RATE", dec!(0.001));
     let profit_buffer = decimal_from_env("PROFIT_BUFFER", dec!(0.0005));
     let min_reference = decimal_from_env("RISK_MIN_REFERENCE", dec!(1));
+    let lp_penalty = f64_from_env("LP_DEVIATION_PENALTY", 0.25_f64);
     #[cfg(feature = "hyperliquid")]
     let hyper_slippage = f64_from_env("HYPERLIQUID_MAX_SLIPPAGE", 0.05);
 
@@ -631,10 +684,23 @@ async fn main() -> Result<()> {
     let min_price_increment = tick_size * Decimal::from(2); // 保持至少两个最小价位差
 
     // 根据交易所类型构建对应客户端
-    let (symbol, exchange): (String, Arc<dyn ExchangeClient>) = if exchange_label == "hyperliquid" {
+    let (symbols, exchange): (Vec<String>, Arc<dyn ExchangeClient>) = if exchange_label == "hyperliquid" {
         #[cfg(feature = "hyperliquid")]
         {
-            let display_symbol = env::var("SYMBOL").unwrap_or_else(|_| "ETH_PERP".to_string());
+            let mut display_symbol = env::var("SYMBOL").unwrap_or_else(|_| "ETH_PERP".to_string());
+            if let Ok(raw_symbols) = env::var("SYMBOLS") {
+                let parsed: Vec<String> = raw_symbols
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                if parsed.len() > 1 {
+                    bail!("Hyperliquid 目前仅支持单一交易对，请仅设置一个 SYMBOL 或 SYMBOLS 条目");
+                }
+                if let Some(first) = parsed.into_iter().next() {
+                    display_symbol = first;
+                }
+            }
             let default_coin = display_symbol.trim_end_matches("_PERP").to_string();
             let coin = env::var("HYPERLIQUID_COIN").unwrap_or(default_coin);
             let private_key =
@@ -657,7 +723,10 @@ async fn main() -> Result<()> {
                 max_slippage: hyper_slippage,
             };
             let exchange = HyperliquidExchange::new(config).await?;
-            (display_symbol, Arc::new(exchange) as Arc<dyn ExchangeClient>)
+            (
+                vec![display_symbol.clone()],
+                Arc::new(exchange) as Arc<dyn ExchangeClient>,
+            )
         }
         #[cfg(not(feature = "hyperliquid"))]
         {
@@ -667,8 +736,28 @@ async fn main() -> Result<()> {
         let base_url = env::var("BASE_URL").unwrap_or_else(|_| BACKPACK_API_BASE_URL.to_string());
         let secret = env::var("SECRET").context("缺少 Backpack SECRET 环境变量")?;
         let client = BpxClient::init(base_url, &secret, None).context("初始化 Backpack API 客户端失败")?;
-        let symbol = env::var("SYMBOL").unwrap_or_else(|_| "FARTCOIN_USDC_PERP".to_string());
-        (symbol, Arc::new(BpxExchange::new(client)) as Arc<dyn ExchangeClient>)
+        let default_symbol = env::var("SYMBOL").unwrap_or_else(|_| "FARTCOIN_USDC_PERP".to_string());
+        let mut parsed_symbols: Vec<String> = env::var("SYMBOLS")
+            .ok()
+            .map(|raw| {
+                raw.split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            })
+            .unwrap_or_else(|| vec![default_symbol.clone()]);
+
+        if parsed_symbols.is_empty() {
+            parsed_symbols.push(default_symbol);
+        }
+
+        parsed_symbols.sort();
+        parsed_symbols.dedup();
+
+        (
+            parsed_symbols,
+            Arc::new(BpxExchange::new(client)) as Arc<dyn ExchangeClient>,
+        )
     };
 
     let params = StrategyParams {
@@ -679,183 +768,193 @@ async fn main() -> Result<()> {
         min_price_increment,
         round_fee_rate,
         profit_buffer,
+        lp_deviation_penalty: lp_penalty,
     };
     let strategy = GridStrategy::new(grid_count);
-    let mut risk_manager = RiskManager::new(max_drawdown, min_reference);
-    let mut last_price: Option<f64> = None;
+    let mut risk_managers: HashMap<String, RiskManager> = symbols
+        .iter()
+        .map(|sym| (sym.clone(), RiskManager::new(max_drawdown, min_reference)))
+        .collect();
+    let mut last_prices: HashMap<String, Option<f64>> = symbols.iter().map(|sym| (sym.clone(), None)).collect();
 
     loop {
         let current_time = Local::now();
         println!("\n=== 检查时间: {} ===", current_time.format("%Y-%m-%d %H:%M:%S"));
 
-        // 获取K线数据
         let start_time = chrono::Utc::now()
-            .checked_sub_signed(chrono::Duration::minutes(60)) // 获取5分钟的数据
+            .checked_sub_signed(chrono::Duration::minutes(60))
             .unwrap()
             .timestamp();
 
-        match exchange
-            .fetch_k_lines(&symbol, KlineInterval::OneMinute, Some(start_time), None)
-            .await
-        {
-            Ok(klines) => {
-                println!("获取到 {} 条K线数据", klines.len());
+        for symbol in &symbols {
+            println!("\n--- 交易对 {} ---", symbol);
+            let symbol_str = symbol.as_str();
 
-                // 提取收盘价
-                let closes: Vec<f64> = klines
-                    .iter()
-                    .filter_map(|k| {
-                        if let Some(close) = k.close.as_ref() {
-                            if let Ok(price) = close.to_string().parse::<f64>() {
-                                if price > 0.0 {
-                                    return Some(price);
-                                }
-                            }
-                        }
-                        None
-                    })
-                    .collect();
+            let Some(risk_manager) = risk_managers.get_mut(symbol) else {
+                eprintln!("风险管理器未初始化: {}", symbol);
+                continue;
+            };
 
-                println!("有效收盘价数量: {}", closes.len());
-                if closes.len() < 30 {
-                    println!("数据不足，等待更多数据, 当前数据: {}", closes.len());
-                    sleep(Duration::from_secs(5)).await;
+            let klines = match exchange
+                .fetch_k_lines(symbol_str, KlineInterval::OneMinute, Some(start_time), None)
+                .await
+            {
+                Ok(klines) => klines,
+                Err(e) => {
+                    eprintln!("获取 {} K线数据失败: {:?}", symbol, e);
+                    if e.to_string().to_lowercase().contains("invalid symbol") {
+                        eprintln!("错误: 交易对 {} 可能不存在或格式不正确", symbol);
+                    }
                     continue;
                 }
+            };
 
-                // 计算振幅
-                let (avg_positive, avg_negative) = calculate_amplitude(&closes);
-                let current_price = *closes.last().unwrap();
+            println!("获取到 {} 条K线数据", klines.len());
 
-                if let Some(last) = last_price {
+            let closes: Vec<f64> = klines
+                .iter()
+                .filter_map(|k| {
+                    if let Some(close) = k.close.as_ref() {
+                        if let Ok(price) = close.to_string().parse::<f64>() {
+                            if price > 0.0 {
+                                return Some(price);
+                            }
+                        }
+                    }
+                    None
+                })
+                .collect();
+
+            println!("有效收盘价数量: {}", closes.len());
+            if closes.len() < 30 {
+                println!("{} 数据不足，等待更多数据", symbol);
+                continue;
+            }
+
+            let (avg_positive, avg_negative) = calculate_amplitude(&closes);
+            let current_price = *closes.last().unwrap();
+
+            if let Some(entry) = last_prices.get_mut(symbol) {
+                if let Some(last) = *entry {
                     let price_change = ((current_price - last) / last) * 100.0;
                     println!(
                         "价格变化: {:.2}% (从 {:.2} 到 {:.2})",
                         price_change, last, current_price
                     );
                 }
-                last_price = Some(current_price);
-
-                let open_orders = match exchange.fetch_open_orders(&symbol).await {
-                    Ok(orders) => orders,
-                    Err(e) => {
-                        eprintln!("获取未完成订单失败: {:?}", e);
-                        sleep(Duration::from_secs(5)).await;
-                        continue;
-                    }
-                };
-
-                let mut buy_orders_raw = Vec::new();
-                let mut sell_orders_raw = Vec::new();
-                for order in open_orders {
-                    if let Order::Limit(limit_order) = order {
-                        match limit_order.side {
-                            Side::Bid => buy_orders_raw.push(limit_order),
-                            Side::Ask => sell_orders_raw.push(limit_order),
-                        }
-                    }
-                }
-
-                let buy_levels = PendingLevels::from_orders(buy_orders_raw.clone(), params.price_precision);
-                let sell_levels = PendingLevels::from_orders(sell_orders_raw.clone(), params.price_precision);
-
-                let (position_quantity, position_equity, entry_price) = match exchange.fetch_positions().await {
-                    Ok(positions) => positions
-                        .into_iter()
-                        .find(|pos| pos.symbol == symbol)
-                        .map(|pos| (pos.net_quantity, pos.total_pnl(), pos.entry_price))
-                        .unwrap_or((Decimal::ZERO, Decimal::ZERO, None)),
-                    Err(e) => {
-                        eprintln!("获取持仓信息失败: {:?}", e);
-                        (Decimal::ZERO, Decimal::ZERO, None)
-                    }
-                };
-
-                let snapshot = MarketSnapshot {
-                    avg_positive,
-                    avg_negative,
-                    current_price,
-                    buy_levels,
-                    sell_levels,
-                    position_quantity,
-                    position_equity,
-                    entry_price,
-                };
-
-                if snapshot.position_equity <= -loss_cut {
-                    println!("亏损达到 {:.2} USDC，执行止损平仓", snapshot.position_equity);
-                    let executor = OrderExecutor::new(exchange.clone(), &symbol, &params);
-                    if !buy_orders_raw.is_empty() {
-                        executor.cancel_orders(buy_orders_raw).await;
-                    }
-                    if !sell_orders_raw.is_empty() {
-                        executor.cancel_orders(sell_orders_raw).await;
-                    }
-                    executor.flatten_position(snapshot.position_quantity).await?;
-                    risk_manager.reset();
-                    sleep(Duration::from_secs(3)).await;
-                    continue;
-                }
-
-                if snapshot.position_equity >= take_profit {
-                    println!("收益达到 {:.2} USDC，执行止盈平仓", snapshot.position_equity);
-                    let executor = OrderExecutor::new(exchange.clone(), &symbol, &params);
-                    if !buy_orders_raw.is_empty() {
-                        executor.cancel_orders(buy_orders_raw).await;
-                    }
-                    if !sell_orders_raw.is_empty() {
-                        executor.cancel_orders(sell_orders_raw).await;
-                    }
-                    executor.flatten_position(snapshot.position_quantity).await?;
-                    risk_manager.reset();
-                    sleep(Duration::from_secs(3)).await;
-                    continue;
-                }
-
-                let risk_decision = risk_manager.evaluate(snapshot.position_equity);
-                if risk_decision.flatten {
-                    println!("触发最大回撤保护，执行清仓");
-                    let executor = OrderExecutor::new(exchange.clone(), &symbol, &params);
-                    if !buy_orders_raw.is_empty() {
-                        executor.cancel_orders(buy_orders_raw).await;
-                    }
-                    if !sell_orders_raw.is_empty() {
-                        executor.cancel_orders(sell_orders_raw).await;
-                    }
-                    executor.flatten_position(snapshot.position_quantity).await?;
-                    risk_manager.reset();
-                    println!("已执行清仓，进入冷却...");
-                    sleep(Duration::from_secs(5)).await;
-                    continue;
-                }
-
-                let plan = strategy.plan(&snapshot, &params);
-                let executor = OrderExecutor::new(exchange.clone(), &symbol, &params);
-                let (pending_long, pending_short) = executor.reconcile(&snapshot, &plan).await?;
-
-                println!("\n=== 当前状态 ===");
-                println!("净持仓: {}", snapshot.position_quantity);
-                println!("在途买单合计数量: {}", pending_long);
-                println!("在途卖单合计数量: {}", pending_short);
-                println!("最大权益: {}", risk_manager.max_equity());
-                println!("当前权益: {}", snapshot.position_equity);
-                println!("平均正向振幅: {:.4}%", snapshot.avg_positive * 100.0);
-                println!("平均负向振幅: {:.4}%", snapshot.avg_negative * 100.0);
+                *entry = Some(current_price);
             }
-            Err(e) => {
-                eprintln!("获取K线数据失败: {:?}", e);
-                if e.to_string().to_lowercase().contains("invalid symbol") {
-                    eprintln!("错误: 交易对 {} 可能不存在或格式不正确", symbol);
-                    break;
+
+            let open_orders = match exchange.fetch_open_orders(symbol_str).await {
+                Ok(orders) => orders,
+                Err(e) => {
+                    eprintln!("获取 {} 未完成订单失败: {:?}", symbol, e);
+                    continue;
+                }
+            };
+
+            let mut buy_orders_raw = Vec::new();
+            let mut sell_orders_raw = Vec::new();
+            for order in open_orders {
+                if let Order::Limit(limit_order) = order {
+                    match limit_order.side {
+                        Side::Bid => buy_orders_raw.push(limit_order),
+                        Side::Ask => sell_orders_raw.push(limit_order),
+                    }
                 }
             }
+
+            let buy_levels = PendingLevels::from_orders(buy_orders_raw.clone(), params.price_precision);
+            let sell_levels = PendingLevels::from_orders(sell_orders_raw.clone(), params.price_precision);
+
+            let (position_quantity, position_equity, entry_price) = match exchange.fetch_positions().await {
+                Ok(positions) => positions
+                    .into_iter()
+                    .find(|pos| pos.symbol == *symbol)
+                    .map(|pos| (pos.net_quantity, pos.total_pnl(), pos.entry_price))
+                    .unwrap_or((Decimal::ZERO, Decimal::ZERO, None)),
+                Err(e) => {
+                    eprintln!("获取 {} 持仓信息失败: {:?}", symbol, e);
+                    (Decimal::ZERO, Decimal::ZERO, None)
+                }
+            };
+
+            let snapshot = MarketSnapshot {
+                avg_positive,
+                avg_negative,
+                current_price,
+                buy_levels,
+                sell_levels,
+                position_quantity,
+                position_equity,
+                entry_price,
+            };
+
+            if snapshot.position_equity <= -loss_cut {
+                println!("{} 亏损达到 {:.2} USDC，执行止损平仓", symbol, snapshot.position_equity);
+                let executor = OrderExecutor::new(exchange.clone(), symbol_str, &params);
+                if !buy_orders_raw.is_empty() {
+                    executor.cancel_orders(buy_orders_raw).await;
+                }
+                if !sell_orders_raw.is_empty() {
+                    executor.cancel_orders(sell_orders_raw).await;
+                }
+                executor.flatten_position(snapshot.position_quantity).await?;
+                risk_manager.reset();
+                continue;
+            }
+
+            if snapshot.position_equity >= take_profit {
+                println!("{} 收益达到 {:.2} USDC，执行止盈平仓", symbol, snapshot.position_equity);
+                let executor = OrderExecutor::new(exchange.clone(), symbol_str, &params);
+                if !buy_orders_raw.is_empty() {
+                    executor.cancel_orders(buy_orders_raw).await;
+                }
+                if !sell_orders_raw.is_empty() {
+                    executor.cancel_orders(sell_orders_raw).await;
+                }
+                executor.flatten_position(snapshot.position_quantity).await?;
+                risk_manager.reset();
+                continue;
+            }
+
+            let risk_decision = risk_manager.evaluate(snapshot.position_equity);
+            if risk_decision.flatten {
+                println!("{} 触发最大回撤保护，执行清仓", symbol);
+                let executor = OrderExecutor::new(exchange.clone(), symbol_str, &params);
+                if !buy_orders_raw.is_empty() {
+                    executor.cancel_orders(buy_orders_raw).await;
+                }
+                if !sell_orders_raw.is_empty() {
+                    executor.cancel_orders(sell_orders_raw).await;
+                }
+                executor.flatten_position(snapshot.position_quantity).await?;
+                risk_manager.reset();
+                println!("{} 已执行清仓，进入冷却...", symbol);
+                continue;
+            }
+
+            let plan = strategy.plan(&snapshot, &params);
+            let executor = OrderExecutor::new(exchange.clone(), symbol_str, &params);
+            let (pending_long, pending_short) = executor.reconcile(&snapshot, &plan).await?;
+
+            println!("{} 当前状态:", symbol);
+            println!("  净持仓: {}", snapshot.position_quantity);
+            println!("  在途买单合计数量: {}", pending_long);
+            println!("  在途卖单合计数量: {}", pending_short);
+            println!("  最大权益: {}", risk_manager.max_equity());
+            println!("  当前权益: {}", snapshot.position_equity);
+            println!("  平均正向振幅: {:.4}%", snapshot.avg_positive * 100.0);
+            println!("  平均负向振幅: {:.4}%", snapshot.avg_negative * 100.0);
         }
 
-        // 等待一段时间再进行下一次检查
         println!("\n等待5秒后进行下一次检查...");
         sleep(Duration::from_secs(5)).await;
     }
-    Ok(())
+    #[allow(unreachable_code)]
+    {
+        Ok(())
+    }
 }
 #[async_trait]
 trait ExchangeClient: Send + Sync {
@@ -944,6 +1043,7 @@ impl ExchangeClient for BpxExchange {
 mod hyperliquid {
     use super::*;
     use alloy::{primitives::Address, signers::local::PrivateKeySigner};
+    use bpx_api_types::order::{MarketOrder, OrderStatus, SelfTradePrevention, TimeInForce};
     use chrono::Utc;
     use hyperliquid_rust_sdk::{
         AssetPosition, ClientCancelRequest, ClientLimit, ClientOrder, ClientOrderRequest,

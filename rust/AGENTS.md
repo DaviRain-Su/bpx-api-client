@@ -35,6 +35,8 @@
 - 风控新增 `TAKE_PROFIT_USD`（默认 2 USDC）与 `LOSS_CUT_USD`（默认 1 USDC）双阈值：触发止盈/止损后先撤单再市价平仓，并重置高水位与冷却计时。
 - `RISK_MIN_REFERENCE`（默认 1 USDC）用作高水位启动线，防止刚开盘的轻微波动触发回撤保护。
 - 网格仍由 LP 线性规划分配数量，搭配最小价差、手续费缓冲与盈利余量，确保挂单价差覆盖成本。
+- `LP_DEVIATION_PENALTY`（默认 0.25）为线性规划加入偏差惩罚，使仓位在多个网格价位间铺开而非集中在单点。
+- 通过 `SYMBOLS`（逗号分隔）可同时运行多资产网格，策略会逐一拉取行情、执行 LP 优化并维护各自的风控状态；Hyperliquid 模式仍限制为单一交易对。
 - 热身与循环阶段继续使用 `tokio::time::sleep` 节流，所有 I/O 均通过 `ExchangeClient` trait 统一调度，便于后续扩展新策略。
 
 ### 架构概览（ASCII）
@@ -114,36 +116,31 @@
 ### 策略核心流程（伪代码）
 ```text
 exchange = select_exchange(EXCHANGE)        # 根据环境变量选择交易所
+symbols = parse_symbols()                   # 解析 SYMBOL / SYMBOLS
 loop every 5 seconds:                       # 主循环：每 5 秒执行一次
-    fetch recent klines -> closes           # 获取最新 K 线并提取收盘价
-    if insufficient data: sleep and continue  # 数据不足则等待再试
+    for symbol in symbols:                  # 逐一处理每个交易对
+        fetch recent klines -> closes       # 获取最新 K 线并提取收盘价
+        if insufficient data: continue      # 数据不足则跳过本轮
 
-    (avg_up, avg_down) = amplitude(closes)  # 计算正负振幅均值
-    open_orders = get_open_orders(symbol)   # 拉取当前未成交限价单
-    pending_long, pending_short = aggregate(open_orders)  # 汇总在途买卖数量
-    position_qty, position_pnl = get_open_future_positions(symbol)  # 读取期货持仓与盈亏
+        (avg_up, avg_down) = amplitude(closes)  # 计算正负振幅均值
+        open_orders = get_open_orders(symbol)   # 拉取当前未成交限价单
+        pending_long, pending_short = aggregate(open_orders)
+        position_qty, position_pnl = get_positions(symbol)  # 读取持仓/盈亏
 
-    if position_pnl >= take_profit:         # 达到止盈阈值
-        cancel_all(open_orders)
-        close_position(position_qty)
-        reset_risk()
-        sleep(cooldown)
-        continue
+        if position_pnl >= take_profit or drawdown_exceeded(position_pnl):
+            cancel_all(open_orders)
+            close_position(position_qty)
+            reset_risk(symbol)
+            continue
 
-    if drawdown_exceeded(position_pnl):       # 若达到最大回撤
-        cancel_all(open_orders)               # 撤销剩余挂单
-        close_position(position_qty)          # 市价平掉仓位
-        risk_manager.reset()                  # 重置基准并冷却
-        sleep(cooldown)
-        continue                              # 继续监控
+        target_bids = grid_prices(price, avg_down, count)
+        target_asks = grid_prices(price, avg_up, count)
 
-    target_bids = grid_prices(price, avg_down, count)       # 依据振幅计算买入网格价
-    target_asks = grid_prices(price, avg_up, count)         # 依据振幅计算卖出网格价
+        optimized_qty = solve_lp(weight_vector, base_quantities, LP_DEVIATION_PENALTY)
+        maintain_levels(target_bids, Side::Bid, pending_long, max_position)
+        maintain_levels(target_asks, Side::Ask, pending_short, max_position)
 
-    maintain_levels(target_bids, Side::Bid, pending_long, max_position)     # 维护买单层位
-    maintain_levels(target_asks, Side::Ask, pending_short, max_position)    # 维护卖单层位
-
-    log(position_qty, pending_long, pending_short, position_pnl)            # 打印状态
+        log(symbol, position_qty, pending_long, pending_short, position_pnl)
 ```
 
 ## 安全与配置提示
