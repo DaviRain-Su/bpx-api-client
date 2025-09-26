@@ -1,10 +1,14 @@
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use bpx_api_client::{BpxClient, BACKPACK_API_BASE_URL};
-use bpx_api_types::futures::FuturePosition;
 use bpx_api_types::markets::{Kline, KlineInterval};
-use bpx_api_types::order::{ExecuteOrderPayload, LimitOrder, Order, OrderType, Side};
+use bpx_api_types::order::{
+    ExecuteOrderPayload, LimitOrder, MarketOrder, Order, OrderStatus, OrderType, SelfTradePrevention, Side, TimeInForce,
+};
 use chrono::Local;
+use good_lp::solvers::microlp::microlp;
+use good_lp::{constraint, variable, variables, Solution, SolverModel};
+use nalgebra::DVector;
 use rust_decimal::prelude::*;
 use rust_decimal::RoundingStrategy;
 use rust_decimal_macros::dec;
@@ -14,6 +18,9 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
+
+#[cfg(feature = "hyperliquid")]
+use hyperliquid::{HyperliquidConfig, HyperliquidExchange};
 
 // 格式化价格到指定精度
 fn format_price(price: f64, precision: u32) -> Option<Decimal> {
@@ -66,6 +73,77 @@ fn parse_decimal_str(value: &str) -> Option<Decimal> {
     Decimal::from_str(value).ok()
 }
 
+fn decimal_from_env(key: &str, default: Decimal) -> Decimal {
+    env::var(key)
+        .ok()
+        .and_then(|raw| Decimal::from_str(&raw).ok())
+        .unwrap_or(default)
+}
+
+fn u32_from_env(key: &str, default: u32) -> u32 {
+    env::var(key)
+        .ok()
+        .and_then(|raw| raw.parse::<u32>().ok())
+        .unwrap_or(default)
+}
+
+#[cfg(feature = "hyperliquid")]
+fn f64_from_env(key: &str, default: f64) -> f64 {
+    env::var(key)
+        .ok()
+        .and_then(|raw| raw.parse::<f64>().ok())
+        .unwrap_or(default)
+}
+
+fn optimize_quantities(base_quantities: &[Decimal], weights: &[f64], capacity: Decimal) -> Vec<Decimal> {
+    if base_quantities.is_empty() || weights.is_empty() || capacity <= Decimal::ZERO {
+        return vec![Decimal::ZERO; base_quantities.len()];
+    }
+
+    let len = base_quantities.len().min(weights.len());
+    let cap_f = capacity.to_f64().unwrap_or(0.0).max(0.0);
+    if cap_f <= f64::EPSILON {
+        return vec![Decimal::ZERO; len];
+    }
+
+    let weights_vec = DVector::from_iterator(len, weights.iter().cloned());
+    if weights_vec.iter().all(|w| *w <= 0.0) {
+        return vec![Decimal::ZERO; len];
+    }
+
+    let mut vars = variables!();
+    let mut decision_vars = Vec::with_capacity(len);
+    for &max_qty in base_quantities.iter().take(len) {
+        let upper = max_qty.to_f64().unwrap_or(0.0).max(0.0);
+        let var = vars.add(variable().min(0.0).max(upper));
+        decision_vars.push(var);
+    }
+
+    let mut objective = 0.0 * decision_vars[0];
+    for (coeff, var) in weights_vec.iter().zip(decision_vars.iter()) {
+        objective = objective + (*coeff) * (*var);
+    }
+
+    let mut sum_expr = 0.0 * decision_vars[0];
+    for var in &decision_vars {
+        sum_expr = sum_expr + 1.0 * (*var);
+    }
+
+    let solution = vars
+        .maximise(objective)
+        .using(microlp)
+        .with(constraint!(sum_expr <= cap_f))
+        .solve();
+
+    match solution {
+        Ok(sol) => decision_vars
+            .iter()
+            .map(|var| Decimal::from_f64(sol.value(*var)).unwrap_or(Decimal::ZERO))
+            .collect(),
+        Err(_) => base_quantities.iter().take(len).cloned().collect(),
+    }
+}
+
 #[derive(Clone, Debug)]
 struct StrategyParams {
     price_precision: u32,
@@ -113,6 +191,21 @@ struct MarketSnapshot {
     position_quantity: Decimal,
     position_equity: Decimal,
     entry_price: Option<Decimal>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct PositionSnapshot {
+    symbol: String,
+    net_quantity: Decimal,
+    pnl_realized: Decimal,
+    pnl_unrealized: Decimal,
+    entry_price: Option<Decimal>,
+}
+
+impl PositionSnapshot {
+    fn total_pnl(&self) -> Decimal {
+        self.pnl_realized + self.pnl_unrealized
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -351,12 +444,59 @@ impl<'a> OrderExecutor<'a> {
         let mut pending_long = snapshot.buy_levels.total_quantity;
         let mut pending_short = snapshot.sell_levels.total_quantity;
 
-        for order_plan in &plan.bids {
+        let available_long = (self.params.max_position - snapshot.position_quantity.max(Decimal::ZERO) - pending_long)
+            .max(Decimal::ZERO);
+        let available_short =
+            (self.params.max_position - snapshot.position_quantity.min(Decimal::ZERO).abs() - pending_short)
+                .max(Decimal::ZERO);
+
+        let bid_weights: Vec<f64> = plan
+            .bids
+            .iter()
+            .map(|order| {
+                let price = order.price.to_f64().unwrap_or(snapshot.current_price);
+                if snapshot.current_price <= 0.0 {
+                    0.0
+                } else {
+                    ((snapshot.current_price - price) / snapshot.current_price).max(0.0)
+                }
+            })
+            .collect();
+        let bid_base: Vec<Decimal> = plan.bids.iter().map(|o| o.quantity).collect();
+        let optimized_bids = optimize_quantities(&bid_base, &bid_weights, available_long);
+
+        let ask_weights: Vec<f64> = plan
+            .asks
+            .iter()
+            .map(|order| {
+                let price = order.price.to_f64().unwrap_or(snapshot.current_price);
+                if snapshot.current_price <= 0.0 {
+                    0.0
+                } else {
+                    ((price - snapshot.current_price) / snapshot.current_price).max(0.0)
+                }
+            })
+            .collect();
+        let ask_base: Vec<Decimal> = plan.asks.iter().map(|o| o.quantity).collect();
+        let optimized_asks = optimize_quantities(&ask_base, &ask_weights, available_short);
+
+        let tolerance = Decimal::from_f64(0.0001).unwrap_or(Decimal::ZERO);
+
+        for (idx, order_plan) in plan.bids.iter().enumerate() {
+            let target_quantity = optimized_bids.get(idx).copied().unwrap_or(Decimal::ZERO);
+            if target_quantity <= Decimal::ZERO {
+                continue;
+            }
+
             let mut reuse = false;
             if let Some(queue) = buy_levels.get_mut(&order_plan.price) {
-                if let Some(existing) = queue.pop_front() {
-                    println!("保留买单: {} @ {}", existing.id, order_plan.price);
-                    reuse = true;
+                if let Some(existing) = queue.front() {
+                    let existing_qty = existing.quantity - existing.executed_quantity;
+                    if (existing_qty - target_quantity).abs() <= tolerance {
+                        let reused_order = queue.pop_front().unwrap();
+                        println!("保留买单: {} @ {}", reused_order.id, order_plan.price);
+                        reuse = true;
+                    }
                 }
                 if queue.is_empty() {
                     buy_levels.remove(&order_plan.price);
@@ -377,7 +517,7 @@ impl<'a> OrderExecutor<'a> {
                 symbol: self.symbol.to_string(),
                 side: Side::Bid,
                 order_type: OrderType::Limit,
-                quantity: Some(order_plan.quantity),
+                quantity: Some(target_quantity),
                 price: Some(order_plan.price),
                 ..Default::default()
             };
@@ -386,21 +526,30 @@ impl<'a> OrderExecutor<'a> {
                 Ok(Order::Limit(limit_order)) => {
                     println!(
                         "买单已提交: ID={}, 价格={}, 数量={}",
-                        limit_order.id, order_plan.price, order_plan.quantity
+                        limit_order.id, order_plan.price, target_quantity
                     );
-                    pending_long += order_plan.quantity;
+                    pending_long += target_quantity;
                 }
                 Ok(_) => {}
                 Err(e) => eprintln!("买单失败: {:?}", e),
             }
         }
 
-        for order_plan in &plan.asks {
+        for (idx, order_plan) in plan.asks.iter().enumerate() {
+            let target_quantity = optimized_asks.get(idx).copied().unwrap_or(Decimal::ZERO);
+            if target_quantity <= Decimal::ZERO {
+                continue;
+            }
+
             let mut reuse = false;
             if let Some(queue) = sell_levels.get_mut(&order_plan.price) {
-                if let Some(existing) = queue.pop_front() {
-                    println!("保留卖单: {} @ {}", existing.id, order_plan.price);
-                    reuse = true;
+                if let Some(existing) = queue.front() {
+                    let existing_qty = existing.quantity - existing.executed_quantity;
+                    if (existing_qty - target_quantity).abs() <= tolerance {
+                        let reused_order = queue.pop_front().unwrap();
+                        println!("保留卖单: {} @ {}", reused_order.id, order_plan.price);
+                        reuse = true;
+                    }
                 }
                 if queue.is_empty() {
                     sell_levels.remove(&order_plan.price);
@@ -421,7 +570,7 @@ impl<'a> OrderExecutor<'a> {
                 symbol: self.symbol.to_string(),
                 side: Side::Ask,
                 order_type: OrderType::Limit,
-                quantity: Some(order_plan.quantity),
+                quantity: Some(target_quantity),
                 price: Some(order_plan.price),
                 ..Default::default()
             };
@@ -430,9 +579,9 @@ impl<'a> OrderExecutor<'a> {
                 Ok(Order::Limit(limit_order)) => {
                     println!(
                         "卖单已提交: ID={}, 价格={}, 数量={}",
-                        limit_order.id, order_plan.price, order_plan.quantity
+                        limit_order.id, order_plan.price, target_quantity
                     );
-                    pending_short += order_plan.quantity;
+                    pending_short += target_quantity;
                 }
                 Ok(_) => {}
                 Err(e) => eprintln!("卖单失败: {:?}", e),
@@ -457,30 +606,70 @@ impl<'a> OrderExecutor<'a> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let base_url = env::var("BASE_URL").unwrap_or_else(|_| BACKPACK_API_BASE_URL.to_string());
-    let secret = env::var("SECRET").expect("Missing SECRET environment variable");
-
     println!("=== 网格交易策略启动 ===");
     println!("时间: {}", Local::now().format("%Y-%m-%d %H:%M:%S"));
 
-    let client = BpxClient::init(base_url, &secret, None).expect("Failed to initialize Backpack API client");
-    let exchange: Arc<dyn ExchangeClient> = Arc::new(BpxExchange::new(client));
-
-    // 交易参数设置
-    let symbol = "FARTCOIN_USDC_PERP"; // 期货合约交易对
-    let _leverage = 5; // 杠杆倍数（暂时未使用）
-    let grid_count: u32 = 3; // 网格数量
-    let trade_amount = dec!(100); // 每个网格的交易金额（USDC）
-    let max_position = dec!(300); // 最大持仓量
-    let max_drawdown = dec!(0.02); // 最大回撤 2%
-    let price_precision = 2; // 价格精度（小数位数）
-    let quantity_precision = 1; // 数量精度（小数位数）
-    let loss_cut = dec!(1); // 最大允许亏损 1 USDC
+    // 解析策略与风险参数（允许通过环境变量覆盖默认值）
+    let exchange_label = env::var("EXCHANGE")
+        .unwrap_or_else(|_| "backpack".to_string())
+        .to_lowercase();
+    let grid_count = u32_from_env("GRID_COUNT", 3);
+    let trade_amount = decimal_from_env("TRADE_AMOUNT_USD", dec!(100));
+    let max_position = decimal_from_env("MAX_POSITION", dec!(300));
+    let max_drawdown = decimal_from_env("MAX_DRAWDOWN", dec!(0.02));
+    let price_precision = u32_from_env("PRICE_PRECISION", 2);
+    let quantity_precision = u32_from_env("QUANTITY_PRECISION", 1);
+    let loss_cut = decimal_from_env("LOSS_CUT_USD", dec!(1));
+    let take_profit = decimal_from_env("TAKE_PROFIT_USD", dec!(2));
+    let round_fee_rate = decimal_from_env("ROUND_FEE_RATE", dec!(0.001));
+    let profit_buffer = decimal_from_env("PROFIT_BUFFER", dec!(0.0005));
+    let min_reference = decimal_from_env("RISK_MIN_REFERENCE", dec!(1));
+    #[cfg(feature = "hyperliquid")]
+    let hyper_slippage = f64_from_env("HYPERLIQUID_MAX_SLIPPAGE", 0.05);
 
     let tick_size = Decimal::from_i128_with_scale(1, price_precision);
-    let min_price_increment = tick_size * Decimal::from(2); // 至少保持两个最小价位差
-    let round_fee_rate = dec!(0.001); // 预估建平仓合计手续费率（0.1%）
-    let profit_buffer = dec!(0.0005); // 额外利润缓冲（0.05%）
+    let min_price_increment = tick_size * Decimal::from(2); // 保持至少两个最小价位差
+
+    // 根据交易所类型构建对应客户端
+    let (symbol, exchange): (String, Arc<dyn ExchangeClient>) = if exchange_label == "hyperliquid" {
+        #[cfg(feature = "hyperliquid")]
+        {
+            let display_symbol = env::var("SYMBOL").unwrap_or_else(|_| "ETH_PERP".to_string());
+            let default_coin = display_symbol.trim_end_matches("_PERP").to_string();
+            let coin = env::var("HYPERLIQUID_COIN").unwrap_or(default_coin);
+            let private_key =
+                env::var("HYPERLIQUID_PRIVATE_KEY").context("缺少 Hyperliquid 私钥: 请设置 HYPERLIQUID_PRIVATE_KEY")?;
+            let vault_address = env::var("HYPERLIQUID_VAULT_ADDRESS").ok();
+
+            let base_env = env::var("HYPERLIQUID_ENV").unwrap_or_else(|_| "testnet".to_string());
+            let base_url = match base_env.to_lowercase().as_str() {
+                "mainnet" => hyperliquid_rust_sdk::BaseUrl::Mainnet,
+                "local" | "localhost" => hyperliquid_rust_sdk::BaseUrl::Localhost,
+                _ => hyperliquid_rust_sdk::BaseUrl::Testnet,
+            };
+
+            let config = HyperliquidConfig {
+                base_url,
+                coin: coin.clone(),
+                display_symbol: display_symbol.clone(),
+                private_key,
+                vault_address,
+                max_slippage: hyper_slippage,
+            };
+            let exchange = HyperliquidExchange::new(config).await?;
+            (display_symbol, Arc::new(exchange) as Arc<dyn ExchangeClient>)
+        }
+        #[cfg(not(feature = "hyperliquid"))]
+        {
+            bail!("当前可执行文件未启用 `hyperliquid` 功能，请在 Cargo 特性中打开后重新构建");
+        }
+    } else {
+        let base_url = env::var("BASE_URL").unwrap_or_else(|_| BACKPACK_API_BASE_URL.to_string());
+        let secret = env::var("SECRET").context("缺少 Backpack SECRET 环境变量")?;
+        let client = BpxClient::init(base_url, &secret, None).context("初始化 Backpack API 客户端失败")?;
+        let symbol = env::var("SYMBOL").unwrap_or_else(|_| "FARTCOIN_USDC_PERP".to_string());
+        (symbol, Arc::new(BpxExchange::new(client)) as Arc<dyn ExchangeClient>)
+    };
 
     let params = StrategyParams {
         price_precision,
@@ -492,7 +681,6 @@ async fn main() -> Result<()> {
         profit_buffer,
     };
     let strategy = GridStrategy::new(grid_count);
-    let min_reference = dec!(1); // 当权益达到 1 USDC 以上才启动回撤保护
     let mut risk_manager = RiskManager::new(max_drawdown, min_reference);
     let mut last_price: Option<f64> = None;
 
@@ -507,7 +695,7 @@ async fn main() -> Result<()> {
             .timestamp();
 
         match exchange
-            .fetch_k_lines(symbol, KlineInterval::OneMinute, Some(start_time), None)
+            .fetch_k_lines(&symbol, KlineInterval::OneMinute, Some(start_time), None)
             .await
         {
             Ok(klines) => {
@@ -548,7 +736,7 @@ async fn main() -> Result<()> {
                 }
                 last_price = Some(current_price);
 
-                let open_orders = match exchange.fetch_open_orders(symbol).await {
+                let open_orders = match exchange.fetch_open_orders(&symbol).await {
                     Ok(orders) => orders,
                     Err(e) => {
                         eprintln!("获取未完成订单失败: {:?}", e);
@@ -575,13 +763,7 @@ async fn main() -> Result<()> {
                     Ok(positions) => positions
                         .into_iter()
                         .find(|pos| pos.symbol == symbol)
-                        .map(|pos| {
-                            let qty = parse_decimal_str(&pos.net_quantity).unwrap_or(Decimal::ZERO);
-                            let realized = parse_decimal_str(&pos.pnl_realized).unwrap_or(Decimal::ZERO);
-                            let unrealized = parse_decimal_str(&pos.pnl_unrealized).unwrap_or(Decimal::ZERO);
-                            let entry = parse_decimal_str(&pos.entry_price).filter(|p| *p > Decimal::ZERO);
-                            (qty, realized + unrealized, entry)
-                        })
+                        .map(|pos| (pos.net_quantity, pos.total_pnl(), pos.entry_price))
                         .unwrap_or((Decimal::ZERO, Decimal::ZERO, None)),
                     Err(e) => {
                         eprintln!("获取持仓信息失败: {:?}", e);
@@ -602,7 +784,22 @@ async fn main() -> Result<()> {
 
                 if snapshot.position_equity <= -loss_cut {
                     println!("亏损达到 {:.2} USDC，执行止损平仓", snapshot.position_equity);
-                    let executor = OrderExecutor::new(exchange.clone(), symbol, &params);
+                    let executor = OrderExecutor::new(exchange.clone(), &symbol, &params);
+                    if !buy_orders_raw.is_empty() {
+                        executor.cancel_orders(buy_orders_raw).await;
+                    }
+                    if !sell_orders_raw.is_empty() {
+                        executor.cancel_orders(sell_orders_raw).await;
+                    }
+                    executor.flatten_position(snapshot.position_quantity).await?;
+                    risk_manager.reset();
+                    sleep(Duration::from_secs(3)).await;
+                    continue;
+                }
+
+                if snapshot.position_equity >= take_profit {
+                    println!("收益达到 {:.2} USDC，执行止盈平仓", snapshot.position_equity);
+                    let executor = OrderExecutor::new(exchange.clone(), &symbol, &params);
                     if !buy_orders_raw.is_empty() {
                         executor.cancel_orders(buy_orders_raw).await;
                     }
@@ -618,7 +815,7 @@ async fn main() -> Result<()> {
                 let risk_decision = risk_manager.evaluate(snapshot.position_equity);
                 if risk_decision.flatten {
                     println!("触发最大回撤保护，执行清仓");
-                    let executor = OrderExecutor::new(exchange.clone(), symbol, &params);
+                    let executor = OrderExecutor::new(exchange.clone(), &symbol, &params);
                     if !buy_orders_raw.is_empty() {
                         executor.cancel_orders(buy_orders_raw).await;
                     }
@@ -633,7 +830,7 @@ async fn main() -> Result<()> {
                 }
 
                 let plan = strategy.plan(&snapshot, &params);
-                let executor = OrderExecutor::new(exchange.clone(), symbol, &params);
+                let executor = OrderExecutor::new(exchange.clone(), &symbol, &params);
                 let (pending_long, pending_short) = executor.reconcile(&snapshot, &plan).await?;
 
                 println!("\n=== 当前状态 ===");
@@ -672,7 +869,7 @@ trait ExchangeClient: Send + Sync {
 
     async fn fetch_open_orders(&self, symbol: &str) -> Result<Vec<Order>>;
 
-    async fn fetch_positions(&self) -> Result<Vec<FuturePosition>>;
+    async fn fetch_positions(&self) -> Result<Vec<PositionSnapshot>>;
 
     async fn submit_order(&self, payload: ExecuteOrderPayload) -> Result<Order>;
 
@@ -701,19 +898,37 @@ impl ExchangeClient for BpxExchange {
         self.client
             .get_k_lines(symbol, interval, start, end)
             .await
-            .map_err(Into::into)
+            .map_err(anyhow::Error::from)
     }
 
     async fn fetch_open_orders(&self, symbol: &str) -> Result<Vec<Order>> {
-        self.client.get_open_orders(Some(symbol)).await.map_err(Into::into)
+        self.client
+            .get_open_orders(Some(symbol))
+            .await
+            .map_err(anyhow::Error::from)
     }
 
-    async fn fetch_positions(&self) -> Result<Vec<FuturePosition>> {
-        self.client.get_open_future_positions().await.map_err(Into::into)
+    async fn fetch_positions(&self) -> Result<Vec<PositionSnapshot>> {
+        let raw = self
+            .client
+            .get_open_future_positions()
+            .await
+            .map_err(anyhow::Error::from)?;
+
+        Ok(raw
+            .into_iter()
+            .map(|pos| PositionSnapshot {
+                symbol: pos.symbol.clone(),
+                net_quantity: parse_decimal_str(&pos.net_quantity).unwrap_or(Decimal::ZERO),
+                pnl_realized: parse_decimal_str(&pos.pnl_realized).unwrap_or(Decimal::ZERO),
+                pnl_unrealized: parse_decimal_str(&pos.pnl_unrealized).unwrap_or(Decimal::ZERO),
+                entry_price: parse_decimal_str(&pos.entry_price).filter(|p| *p > Decimal::ZERO),
+            })
+            .collect())
     }
 
     async fn submit_order(&self, payload: ExecuteOrderPayload) -> Result<Order> {
-        self.client.execute_order(payload).await.map_err(Into::into)
+        self.client.execute_order(payload).await.map_err(anyhow::Error::from)
     }
 
     async fn cancel_order(&self, symbol: &str, order_id: &str) -> Result<()> {
@@ -721,6 +936,432 @@ impl ExchangeClient for BpxExchange {
             .cancel_order(symbol, Some(order_id), None)
             .await
             .map(|_| ())
-            .map_err(Into::into)
+            .map_err(anyhow::Error::from)
+    }
+}
+
+#[cfg(feature = "hyperliquid")]
+mod hyperliquid {
+    use super::*;
+    use alloy::{primitives::Address, signers::local::PrivateKeySigner};
+    use chrono::Utc;
+    use hyperliquid_rust_sdk::{
+        AssetPosition, ClientCancelRequest, ClientLimit, ClientOrder, ClientOrderRequest,
+        ExchangeClient as HyperExchangeClient, ExchangeDataStatus, ExchangeResponseStatus, InfoClient,
+        MarketCloseParams,
+    };
+    use tokio::sync::Mutex;
+
+    #[derive(Clone)]
+    pub(super) struct HyperliquidConfig {
+        pub base_url: hyperliquid_rust_sdk::BaseUrl,
+        pub coin: String,
+        pub display_symbol: String,
+        pub private_key: String,
+        pub vault_address: Option<String>,
+        pub max_slippage: f64,
+    }
+
+    pub(super) struct HyperliquidExchange {
+        info_client: InfoClient,
+        exchange_client: HyperExchangeClient,
+        address: Address,
+        coin: String,
+        display_symbol: String,
+        baseline_account_value: Mutex<Option<Decimal>>,
+        max_slippage: f64,
+    }
+
+    impl HyperliquidExchange {
+        pub async fn new(config: HyperliquidConfig) -> Result<Self> {
+            let wallet: PrivateKeySigner = config.private_key.parse().context("Hyperliquid 私钥格式不正确")?;
+            let address = wallet.address();
+            let vault_address = if let Some(vault) = config.vault_address {
+                Some(vault.parse().context("Hyperliquid 金库地址格式不正确")?)
+            } else {
+                None
+            };
+
+            let info_client = InfoClient::new(None, Some(config.base_url)).await?;
+            let exchange_client =
+                HyperExchangeClient::new(None, wallet.clone(), Some(config.base_url), None, vault_address).await?;
+
+            Ok(HyperliquidExchange {
+                info_client,
+                exchange_client,
+                address,
+                coin: config.coin,
+                display_symbol: config.display_symbol,
+                baseline_account_value: Mutex::new(None),
+                max_slippage: config.max_slippage,
+            })
+        }
+
+        fn interval_to_str(interval: KlineInterval) -> &'static str {
+            match interval {
+                KlineInterval::OneMinute => "1m",
+                KlineInterval::ThreeMinutes => "3m",
+                KlineInterval::FiveMinutes => "5m",
+                KlineInterval::FifteenMinutes => "15m",
+                KlineInterval::ThirtyMinutes => "30m",
+                KlineInterval::OneHour => "1h",
+                KlineInterval::TwoHours => "2h",
+                KlineInterval::FourHours => "4h",
+                KlineInterval::SixHours => "6h",
+                KlineInterval::EightHours => "8h",
+                KlineInterval::TwelveHours => "12h",
+                KlineInterval::OneDay => "1d",
+                KlineInterval::ThreeDays => "3d",
+                KlineInterval::OneWeek => "1w",
+                KlineInterval::OneMonth => "1M",
+            }
+        }
+
+        fn parse_decimal(value: &str) -> Decimal {
+            Decimal::from_str(value).unwrap_or(Decimal::ZERO)
+        }
+
+        fn is_buy_str(value: &str) -> bool {
+            matches!(value.to_ascii_uppercase().as_str(), "B" | "BUY")
+        }
+
+        fn side_to_bool(side: Side) -> bool {
+            matches!(side, Side::Bid)
+        }
+
+        async fn map_limit_response(
+            &self,
+            statuses: &[ExchangeDataStatus],
+            side: Side,
+            price: Decimal,
+            quantity: Decimal,
+        ) -> Result<LimitOrder> {
+            let mut order_id: Option<u64> = None;
+            let mut executed_quantity = Decimal::ZERO;
+            let mut exec_price = price;
+            let mut status = OrderStatus::New;
+
+            for entry in statuses {
+                match entry {
+                    ExchangeDataStatus::Resting(resting) => {
+                        order_id = Some(resting.oid);
+                        status = OrderStatus::New;
+                    }
+                    ExchangeDataStatus::Filled(filled) => {
+                        order_id = Some(filled.oid);
+                        executed_quantity = Self::parse_decimal(&filled.total_sz);
+                        exec_price = Self::parse_decimal(&filled.avg_px);
+                        status = OrderStatus::Filled;
+                    }
+                    ExchangeDataStatus::Success
+                    | ExchangeDataStatus::WaitingForFill
+                    | ExchangeDataStatus::WaitingForTrigger => {}
+                    ExchangeDataStatus::Error(err) => {
+                        bail!("Hyperliquid 返回错误: {err}");
+                    }
+                }
+            }
+
+            if order_id.is_none() {
+                let open_orders = self.info_client.open_orders(self.address).await?;
+                order_id = open_orders
+                    .into_iter()
+                    .filter(|o| o.coin.eq_ignore_ascii_case(&self.coin))
+                    .find(|o| {
+                        let price_match = (Self::parse_decimal(&o.limit_px) - price).abs()
+                            <= Decimal::from_str("0.0000001").unwrap_or(Decimal::ZERO);
+                        price_match && (Self::is_buy_str(&o.side) == Self::side_to_bool(side))
+                    })
+                    .map(|o| o.oid);
+            }
+
+            let order_id = order_id.context("未能获取 Hyperliquid 订单 ID")?;
+            let executed_quote_quantity = exec_price * executed_quantity;
+
+            Ok(LimitOrder {
+                id: order_id.to_string(),
+                client_id: None,
+                symbol: self.display_symbol.clone(),
+                side,
+                quantity,
+                executed_quantity,
+                executed_quote_quantity,
+                price,
+                trigger_price: None,
+                time_in_force: TimeInForce::GTC,
+                self_trade_prevention: SelfTradePrevention::RejectBoth,
+                post_only: false,
+                status,
+                created_at: Utc::now().timestamp_millis(),
+            })
+        }
+
+        fn map_market_response(
+            &self,
+            statuses: &[ExchangeDataStatus],
+            side: Side,
+            requested_quantity: Decimal,
+        ) -> Result<MarketOrder> {
+            let mut order_id: Option<u64> = None;
+            let mut executed_quantity = Decimal::ZERO;
+            let mut exec_price = Decimal::ZERO;
+
+            for entry in statuses {
+                match entry {
+                    ExchangeDataStatus::Filled(filled) => {
+                        order_id = Some(filled.oid);
+                        executed_quantity = Self::parse_decimal(&filled.total_sz);
+                        exec_price = Self::parse_decimal(&filled.avg_px);
+                    }
+                    ExchangeDataStatus::Success
+                    | ExchangeDataStatus::WaitingForFill
+                    | ExchangeDataStatus::WaitingForTrigger => {}
+                    ExchangeDataStatus::Resting(resting) => {
+                        order_id = Some(resting.oid);
+                    }
+                    ExchangeDataStatus::Error(err) => {
+                        bail!("Hyperliquid 市价单返回错误: {err}");
+                    }
+                }
+            }
+
+            let order_id = order_id.context("未能获取 Hyperliquid 市价单 ID")?;
+            let executed_quantity = if executed_quantity > Decimal::ZERO {
+                executed_quantity
+            } else {
+                requested_quantity
+            };
+            let executed_quote_quantity = exec_price * executed_quantity;
+
+            Ok(MarketOrder {
+                id: order_id.to_string(),
+                client_id: None,
+                symbol: self.display_symbol.clone(),
+                side,
+                quantity: Some(requested_quantity),
+                executed_quantity,
+                quote_quantity: Some(exec_price * requested_quantity),
+                executed_quote_quantity,
+                trigger_price: None,
+                time_in_force: TimeInForce::IOC,
+                self_trade_prevention: SelfTradePrevention::RejectBoth,
+                status: OrderStatus::Filled,
+                created_at: Utc::now().timestamp_millis(),
+            })
+        }
+    }
+
+    #[async_trait]
+    impl ExchangeClient for HyperliquidExchange {
+        async fn fetch_k_lines(
+            &self,
+            _symbol: &str,
+            interval: KlineInterval,
+            start: Option<i64>,
+            end: Option<i64>,
+        ) -> Result<Vec<Kline>> {
+            let end_ts = end.unwrap_or_else(|| chrono::Utc::now().timestamp());
+            let start_ts = start.unwrap_or(end_ts.saturating_sub(3600));
+            let start_ms = (start_ts.max(0) as u64) * 1000;
+            let end_ms = (end_ts.max(0) as u64) * 1000;
+
+            let candles = self
+                .info_client
+                .candles_snapshot(
+                    self.coin.clone(),
+                    Self::interval_to_str(interval).to_string(),
+                    start_ms,
+                    end_ms,
+                )
+                .await?;
+
+            Ok(candles
+                .into_iter()
+                .map(|candle| Kline {
+                    start: candle.time_open.to_string(),
+                    open: Some(Self::parse_decimal(&candle.open)),
+                    high: Some(Self::parse_decimal(&candle.high)),
+                    low: Some(Self::parse_decimal(&candle.low)),
+                    close: Some(Self::parse_decimal(&candle.close)),
+                    end: Some(candle.time_close.to_string()),
+                    volume: Self::parse_decimal(&candle.vlm),
+                    trades: candle.num_trades.to_string(),
+                })
+                .collect())
+        }
+
+        async fn fetch_open_orders(&self, _symbol: &str) -> Result<Vec<Order>> {
+            let orders = self.info_client.open_orders(self.address).await?;
+
+            Ok(orders
+                .into_iter()
+                .filter(|order| order.coin.eq_ignore_ascii_case(&self.coin))
+                .map(|order| {
+                    let side = if Self::is_buy_str(&order.side) {
+                        Side::Bid
+                    } else {
+                        Side::Ask
+                    };
+                    let price = Self::parse_decimal(&order.limit_px);
+                    let quantity = Self::parse_decimal(&order.sz);
+                    Order::Limit(LimitOrder {
+                        id: order.oid.to_string(),
+                        client_id: None,
+                        symbol: self.display_symbol.clone(),
+                        side,
+                        quantity,
+                        executed_quantity: Decimal::ZERO,
+                        executed_quote_quantity: Decimal::ZERO,
+                        price,
+                        trigger_price: None,
+                        time_in_force: TimeInForce::GTC,
+                        self_trade_prevention: SelfTradePrevention::RejectBoth,
+                        post_only: false,
+                        status: OrderStatus::New,
+                        created_at: order.timestamp as i64,
+                    })
+                })
+                .collect())
+        }
+
+        async fn fetch_positions(&self) -> Result<Vec<PositionSnapshot>> {
+            let state = self.info_client.user_state(self.address).await?;
+
+            let account_value = Self::parse_decimal(&state.margin_summary.account_value);
+            let mut baseline = self.baseline_account_value.lock().await;
+            let baseline_value = if let Some(value) = *baseline {
+                value
+            } else {
+                *baseline = Some(account_value);
+                account_value
+            };
+
+            let mut matching_positions: Vec<(&AssetPosition, Decimal)> = Vec::new();
+            let mut total_unrealized = Decimal::ZERO;
+            for asset in &state.asset_positions {
+                if asset.position.coin.eq_ignore_ascii_case(&self.coin) {
+                    let unrealized = Self::parse_decimal(&asset.position.unrealized_pnl);
+                    total_unrealized += unrealized;
+                    matching_positions.push((asset, unrealized));
+                }
+            }
+            drop(baseline);
+
+            let realized_component = (account_value - baseline_value) - total_unrealized;
+
+            if matching_positions.is_empty() {
+                return Ok(vec![PositionSnapshot {
+                    symbol: self.display_symbol.clone(),
+                    net_quantity: Decimal::ZERO,
+                    pnl_realized: realized_component,
+                    pnl_unrealized: Decimal::ZERO,
+                    entry_price: None,
+                }]);
+            }
+
+            let mut snapshots: Vec<PositionSnapshot> = matching_positions
+                .into_iter()
+                .map(|(asset, unrealized)| PositionSnapshot {
+                    symbol: self.display_symbol.clone(),
+                    net_quantity: Self::parse_decimal(&asset.position.szi),
+                    pnl_realized: Decimal::ZERO,
+                    pnl_unrealized: unrealized,
+                    entry_price: asset
+                        .position
+                        .entry_px
+                        .as_ref()
+                        .and_then(|px| Decimal::from_str(px).ok()),
+                })
+                .collect();
+
+            if let Some(first) = snapshots.first_mut() {
+                first.pnl_realized += realized_component;
+            }
+
+            Ok(snapshots)
+        }
+
+        async fn submit_order(&self, payload: ExecuteOrderPayload) -> Result<Order> {
+            match payload.order_type {
+                OrderType::Limit => {
+                    let price = payload.price.context("Hyperliquid 限价单缺少价格")?;
+                    let quantity = payload.quantity.context("Hyperliquid 限价单缺少数量")?;
+                    let request = ClientOrderRequest {
+                        asset: self.coin.clone(),
+                        is_buy: Self::side_to_bool(payload.side),
+                        reduce_only: false,
+                        limit_px: price.to_f64().context("无法将价格转换为浮点数以提交给 Hyperliquid")?,
+                        sz: quantity
+                            .to_f64()
+                            .context("无法将数量转换为浮点数以提交给 Hyperliquid")?,
+                        cloid: None,
+                        order_type: ClientOrder::Limit(ClientLimit { tif: "Gtc".to_string() }),
+                    };
+
+                    let response = self.exchange_client.order(request, None).await?;
+                    if let ExchangeResponseStatus::Ok(resp) = response {
+                        if let Some(data) = resp.data {
+                            let order = self
+                                .map_limit_response(&data.statuses, payload.side, price, quantity)
+                                .await?;
+                            Ok(Order::Limit(order))
+                        } else {
+                            bail!("Hyperliquid 限价单返回空数据");
+                        }
+                    } else if let ExchangeResponseStatus::Err(err) = response {
+                        bail!("Hyperliquid 限价单被拒绝: {err}");
+                    } else {
+                        bail!("Hyperliquid 限价单返回未知响应");
+                    }
+                }
+                OrderType::Market => {
+                    let quantity = payload.quantity.context("Hyperliquid 市价单缺少数量")?;
+
+                    let params = MarketCloseParams {
+                        asset: &self.coin,
+                        sz: Some(quantity.to_f64().context("无法将市价单数量转换为浮点数")?),
+                        px: payload.price.and_then(|p| p.to_f64()),
+                        slippage: Some(self.max_slippage),
+                        cloid: None,
+                        wallet: None,
+                    };
+
+                    let response = self.exchange_client.market_close(params).await?;
+                    if let ExchangeResponseStatus::Ok(resp) = response {
+                        if let Some(data) = resp.data {
+                            let order = self.map_market_response(&data.statuses, payload.side, quantity)?;
+                            Ok(Order::Market(order))
+                        } else {
+                            bail!("Hyperliquid 市价单返回空数据");
+                        }
+                    } else if let ExchangeResponseStatus::Err(err) = response {
+                        bail!("Hyperliquid 市价单被拒绝: {err}");
+                    } else {
+                        bail!("Hyperliquid 市价单返回未知响应");
+                    }
+                }
+            }
+        }
+
+        async fn cancel_order(&self, _symbol: &str, order_id: &str) -> Result<()> {
+            let oid = order_id.parse::<u64>().context("无法解析 Hyperliquid 订单 ID")?;
+            let response = self
+                .exchange_client
+                .cancel(
+                    ClientCancelRequest {
+                        asset: self.coin.clone(),
+                        oid,
+                    },
+                    None,
+                )
+                .await?;
+
+            match response {
+                ExchangeResponseStatus::Ok(_) => Ok(()),
+                ExchangeResponseStatus::Err(err) => {
+                    bail!("Hyperliquid 撤单失败: {err}");
+                }
+            }
+        }
     }
 }

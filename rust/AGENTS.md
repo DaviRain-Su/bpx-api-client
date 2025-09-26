@@ -11,6 +11,7 @@
 - `cargo test` 或 `just test` 运行工作区的单元与文档测试。
 - `just check` 依次执行 `cargo check`、`cargo +nightly fmt --check`、`cargo clippy`。
 - `just fix` 使用 nightly `rustfmt` 并应用可自动修复的 Clippy 建议。
+- 启用 Hyperliquid 客户端时使用 `cargo run --features hyperliquid --bin grid_trading`，需提前配置相关环境变量。
 
 ## 代码风格与命名约定
 - 遵循 Rust 2021 规则：四空格缩进、`snake_case` 项、`UpperCamelCase` 类型、`SCREAMING_SNAKE_CASE` 常量。
@@ -28,17 +29,13 @@
 - PR 需说明变更、列出执行的测试命令并关联 Backpack Exchange 任务或 Issue；如 API 行为变更请附截图或示例响应。
 
 ## 最新策略调整
-- `examples/src/bin/grid_trading.rs` 已在热身逻辑与主循环中改用 `tokio::time::sleep`，避免阻塞 Tokio 运行时。
-- 网格挂单逻辑通过 `get_open_orders` 读取实时订单，只复用价格匹配的层位、撤销过期层，并在估算净敞口与在途数量后遵守 `max_position`。
-- 回撤保护依赖 `get_open_future_positions` 的盈亏数据；触发阈值时先撤单，再按仓位方向执行市价平仓。
-- 价格与数量工具会过滤非有限值并向零截断，P&L 解析对异常字符串进行容错，防止运行时 panic。
-- 新增 `StrategyParams`、`TradingStrategy`、`OrderExecutor`、`RiskManager` 等抽象组件，方便在同一执行框架下插入不同策略或拓展风控逻辑。
-- 抽象出 `ExchangeClient` 接口，当前通过 `BpxExchange` 适配 Backpack，后续可接入其他交易所客户端而无需改动策略核心。
-- 调整 `RiskManager` 的初始权益与高水位记录逻辑，仅在权益为正时建立基准，并基于高水位计算回撤阈值，避免启动阶段误触清仓。
-- 追加最小权益阈值（默认 1 USDC），只有当累计盈亏达到该水平后才启用回撤保护，过滤掉初期的微小浮动噪声。
-- 网格价格生成新增最小价差、手续费缓冲和收益阈值：避开重复价位、强制留出手续费空间，仅在满足 `entry_price*(1±margin)` 后才继续补单。
-- 风控在触发清仓后会重置基准并进入短暂冷却，允许策略在风险解除后继续自动建仓。
-- 新增固定止损：当累计亏损达到 1 USDC 即刻撤单并市价平仓，随后重置风控状态。
+- `EXCHANGE` 环境变量控制交易所选择：`backpack` 使用默认 `BpxExchange`，`hyperliquid` 需配合 `--features hyperliquid` 启动 Hyperliquid 客户端。
+- `HyperliquidExchange` 基于官方 SDK 实现蜡烛、订单、仓位与市价平仓接口，需提供 `HYPERLIQUID_PRIVATE_KEY` 等环境变量完成签名。
+- 引入 `PositionSnapshot` 结构，统一抽取净仓、已实现/未实现盈亏，使风控逻辑在多交易所间保持一致。
+- 风控新增 `TAKE_PROFIT_USD`（默认 2 USDC）与 `LOSS_CUT_USD`（默认 1 USDC）双阈值：触发止盈/止损后先撤单再市价平仓，并重置高水位与冷却计时。
+- `RISK_MIN_REFERENCE`（默认 1 USDC）用作高水位启动线，防止刚开盘的轻微波动触发回撤保护。
+- 网格仍由 LP 线性规划分配数量，搭配最小价差、手续费缓冲与盈利余量，确保挂单价差覆盖成本。
+- 热身与循环阶段继续使用 `tokio::time::sleep` 节流，所有 I/O 均通过 `ExchangeClient` trait 统一调度，便于后续扩展新策略。
 
 ### 架构概览（ASCII）
 ```text
@@ -101,8 +98,8 @@
 ┌────────────────────────────┐
 │ 实现:                       │
 │ ├─ BpxExchange (默认)        │
-│ └─ HyperliquidExchange*    │
-│     *需启用 `hyperliquid` 特性 │
+│ └─ HyperliquidExchange      │
+│     (启用 `hyperliquid`)     │
 └────────────────────────────┘
 ```
 
@@ -112,9 +109,11 @@
 - `RiskManager` 在收到最新权益后先更新高水位，再根据指定最小参考值与最大回撤比率判断是否需要全局清仓。
 - `OrderExecutor` 统一封装与交易所交互的逻辑，处理挂单复用、下单与撤单，策略层只需提供目标价格/数量。
 - 当前策略为 `GridStrategy`，它根据振幅和参数生成对称网格计划；未来如需添加均线或动量策略，仅需实现新的 `plan` 方法并复用同一执行框架。
+- `ExchangeClient` + `PositionSnapshot` 将交易所细节与风控解耦，Hyperliquid 适配器复用同一抽象即可读取/平掉仓位。
 
 ### 策略核心流程（伪代码）
 ```text
+exchange = select_exchange(EXCHANGE)        # 根据环境变量选择交易所
 loop every 5 seconds:                       # 主循环：每 5 秒执行一次
     fetch recent klines -> closes           # 获取最新 K 线并提取收盘价
     if insufficient data: sleep and continue  # 数据不足则等待再试
@@ -123,6 +122,13 @@ loop every 5 seconds:                       # 主循环：每 5 秒执行一次
     open_orders = get_open_orders(symbol)   # 拉取当前未成交限价单
     pending_long, pending_short = aggregate(open_orders)  # 汇总在途买卖数量
     position_qty, position_pnl = get_open_future_positions(symbol)  # 读取期货持仓与盈亏
+
+    if position_pnl >= take_profit:         # 达到止盈阈值
+        cancel_all(open_orders)
+        close_position(position_qty)
+        reset_risk()
+        sleep(cooldown)
+        continue
 
     if drawdown_exceeded(position_pnl):       # 若达到最大回撤
         cancel_all(open_orders)               # 撤销剩余挂单
@@ -143,3 +149,4 @@ loop every 5 seconds:                       # 主循环：每 5 秒执行一次
 ## 安全与配置提示
 - 切勿硬编码真实 API 密钥；运行示例前通过环境变量注入。
 - 使用内置的 `BACKPACK_API_BASE_URL` 与 `BACKPACK_WS_URL` 常量，避免混用不同环境。
+- Hyperliquid 的私钥、金库地址等敏感数据必须通过环境变量传入，并避免输出在日志中。
