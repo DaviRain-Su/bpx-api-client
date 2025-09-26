@@ -475,6 +475,7 @@ async fn main() -> Result<()> {
     let max_drawdown = dec!(0.02); // 最大回撤 2%
     let price_precision = 2; // 价格精度（小数位数）
     let quantity_precision = 1; // 数量精度（小数位数）
+    let loss_cut = dec!(1); // 最大允许亏损 1 USDC
 
     let tick_size = Decimal::from_i128_with_scale(1, price_precision);
     let min_price_increment = tick_size * Decimal::from(2); // 至少保持两个最小价位差
@@ -598,6 +599,21 @@ async fn main() -> Result<()> {
                     position_equity,
                     entry_price,
                 };
+
+                if snapshot.position_equity <= -loss_cut {
+                    println!("亏损达到 {:.2} USDC，执行止损平仓", snapshot.position_equity);
+                    let executor = OrderExecutor::new(exchange.clone(), symbol, &params);
+                    if !buy_orders_raw.is_empty() {
+                        executor.cancel_orders(buy_orders_raw).await;
+                    }
+                    if !sell_orders_raw.is_empty() {
+                        executor.cancel_orders(sell_orders_raw).await;
+                    }
+                    executor.flatten_position(snapshot.position_quantity).await?;
+                    risk_manager.reset();
+                    sleep(Duration::from_secs(3)).await;
+                    continue;
+                }
 
                 let risk_decision = risk_manager.evaluate(snapshot.position_equity);
                 if risk_decision.flatten {
